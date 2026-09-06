@@ -1,0 +1,228 @@
+"""Turning text into a flat token file, and reading windows out of it.
+
+The corpus is one array on disk. Tokenising a hundred million tokens takes long
+enough that being interrupted must not mean starting over, so the array is a
+memory-mapped file written in place and a small json note records how far it
+got. Re-running `fetch` continues from there.
+
+The last `data.eval_tokens` of the array are held out. Nothing in training is
+allowed to draw a window that reaches into them, which is the only reason the
+numbers at the end mean anything.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import numpy as np
+
+from . import ui
+
+
+# ==============================
+# ===  Layout                ===
+# ==============================
+
+def corpus_name(config) -> str:
+    teacher = str(config.require("model.teacher")).replace("/", "_")
+    kind = config.get("data.kind", "fineweb")
+    total = int(config.require("data.train_tokens")) + \
+        int(config.require("data.eval_tokens"))
+    return f"{teacher}-{kind}-{total // 1_000_000}M"
+
+
+def corpus_files(config) -> tuple[Path, Path]:
+    base = config.path("paths.corpus") / corpus_name(config)
+    return base.with_suffix(".npy"), base.with_suffix(".json")
+
+
+def token_dtype(vocab: int):
+    return np.uint16 if vocab < 2 ** 16 else np.uint32
+
+
+# ==============================
+# ===  Sources               ===
+# ==============================
+
+def _fineweb_documents(config, start_shard: int, skip: int):
+    """Yield text documents, shard by shard, without loading a shard at once."""
+    import pyarrow.parquet as pq
+    from huggingface_hub import hf_hub_download
+
+    repo = config.require("data.repo")
+    pattern = config.require("data.shard")
+    shard = start_shard
+    while True:
+        ui.step(f"downloading shard {shard} of {repo}")
+        path = hf_hub_download(repo, pattern.format(shard), repo_type="dataset")
+        handle = pq.ParquetFile(path)
+        seen = 0
+        for batch in handle.iter_batches(batch_size=512, columns=["text"]):
+            texts = batch.column("text").to_pylist()
+            if seen + len(texts) <= skip:
+                seen += len(texts)
+                continue
+            if seen < skip:
+                texts = texts[skip - seen:]
+            seen += len(texts)
+            yield shard, seen, texts
+        shard += 1
+        skip = 0
+
+
+def _text_documents(config, start_shard: int, skip: int):
+    """A local file, split on blank lines, for training on your own material."""
+    path = Path(str(config.require("data.text_file"))).expanduser()
+    if not path.exists():
+        raise FileNotFoundError(f"data.text_file does not exist: {path}")
+    chunks = path.read_text(encoding="utf-8", errors="replace").split("\n\n")
+    chunks = [c.strip() for c in chunks if c.strip()]
+    for index in range(skip, len(chunks), 512):
+        yield 0, index + 512, chunks[index:index + 512]
+
+
+# ==============================
+# ===  Building              ===
+# ==============================
+
+def build_corpus(config, tokenizer) -> Path:
+    """Tokenise until the target is reached; resume if a partial file exists."""
+    array_path, note_path = corpus_files(config)
+    array_path.parent.mkdir(parents=True, exist_ok=True)
+
+    target = int(config.require("data.train_tokens")) + \
+        int(config.require("data.eval_tokens"))
+    dtype = token_dtype(len(tokenizer))
+
+    note = {"written": 0, "shard": 0, "row": 0, "target": target,
+            "dtype": np.dtype(dtype).name,
+            "teacher": config.require("model.teacher")}
+    if note_path.exists() and array_path.exists():
+        stored = json.loads(note_path.read_text())
+        if stored.get("target") == target and stored.get("dtype") == note["dtype"]:
+            note = stored
+            if 0 < note["written"] < target:
+                ui.step(f"resuming at {note['written'] / 1e6:.1f}M tokens")
+        else:
+            ui.warn("existing corpus was built with other settings, rebuilding")
+
+    if note["written"] >= target:
+        ui.good(f"corpus ready: {target / 1e6:.1f}M tokens at {array_path.name}")
+        return array_path
+
+    mode = "r+" if array_path.exists() and note["written"] else "w+"
+    tokens = np.lib.format.open_memmap(
+        array_path, mode=mode, dtype=dtype, shape=(target,))
+
+    source = {"fineweb": _fineweb_documents, "text": _text_documents}
+    reader = source[config.get("data.kind", "fineweb")]
+    # `or` is wrong here: token id 0 is a perfectly ordinary end-of-text id.
+    eos = getattr(tokenizer, "eos_token_id", None)
+    if eos is None:
+        eos = getattr(tokenizer, "pad_token_id", None)
+    if eos is None:
+        eos = 0
+
+    progress = ui.Progress("tokenising", target)
+    written = int(note["written"])
+    try:
+        for shard, row, texts in reader(config, int(note["shard"]), int(note["row"])):
+            encoded = tokenizer(texts, add_special_tokens=False)["input_ids"]
+            for ids in encoded:
+                piece = np.array(ids + [eos], dtype=dtype)
+                room = min(len(piece), target - written)
+                if room <= 0:
+                    break
+                tokens[written:written + room] = piece[:room]
+                written += room
+            note.update({"written": written, "shard": shard, "row": row})
+            note_path.write_text(json.dumps(note, indent=2))
+            progress.update(written)
+            if written >= target:
+                break
+    finally:
+        tokens.flush()
+        note.update({"written": written})
+        note_path.write_text(json.dumps(note, indent=2))
+
+    progress.done(f"{written / 1e6:.1f}M tokens")
+    if written < target:
+        ui.warn(f"stopped short of {target / 1e6:.1f}M; run fetch again to continue")
+    return array_path
+
+
+def open_corpus(config) -> np.memmap:
+    array_path, note_path = corpus_files(config)
+    if not array_path.exists():
+        raise FileNotFoundError(
+            f"no corpus at {array_path} — run `make fetch` on a machine with "
+            f"network access first")
+    if note_path.exists():
+        note = json.loads(note_path.read_text())
+        if note.get("written", 0) < note.get("target", 0):
+            ui.warn(f"corpus is only {note['written'] / 1e6:.1f}M of "
+                    f"{note['target'] / 1e6:.1f}M tokens")
+    return np.load(array_path, mmap_mode="r")
+
+
+# ==============================
+# ===  Reading windows       ===
+# ==============================
+
+class TokenWindows:
+    """Random fixed-length windows from the training part of the corpus.
+
+    Written as a plain iterator rather than an IterableDataset so that a worker
+    process is optional: on a single card the copy is cheap and the extra
+    processes only cost memory.
+    """
+
+    def __init__(self, config, rank: int = 0, world: int = 1):
+        self.tokens = open_corpus(config)
+        self.seq = int(config.require("train.seq"))
+        held = int(config.require("data.eval_tokens"))
+        self.limit = len(self.tokens) - held - self.seq - 1
+        if self.limit <= 0:
+            raise ValueError("corpus is too small for this sequence length")
+        seed = int(config.get("run.seed", 0)) + rank
+        self.rng = np.random.default_rng(seed)
+        self.world = world
+
+    def batch(self, size: int):
+        import torch
+
+        starts = self.rng.integers(0, self.limit, size)
+        rows = np.stack([np.asarray(self.tokens[s:s + self.seq + 1],
+                                    dtype=np.int64) for s in starts])
+        chunk = torch.from_numpy(rows)
+        return chunk[:, :-1], chunk[:, 1:]
+
+    def state(self) -> dict:
+        return {"rng": self.rng.bit_generator.state}
+
+    def load_state(self, state: dict) -> None:
+        if state and "rng" in state:
+            self.rng.bit_generator.state = state["rng"]
+
+
+def held_out_windows(config, count: int | None = None):
+    """The evaluation set: fixed, contiguous, never seen by training."""
+    import torch
+
+    tokens = open_corpus(config)
+    seq = int(config.require("train.seq"))
+    held = int(config.require("data.eval_tokens"))
+    count = int(count or config.require("eval.windows"))
+
+    start = len(tokens) - held
+    available = (held - 1) // seq
+    if available < 1:
+        raise ValueError("data.eval_tokens is smaller than one window")
+    count = min(count, available)
+    rows = np.stack([
+        np.asarray(tokens[start + i * seq: start + i * seq + seq + 1],
+                   dtype=np.int64)
+        for i in range(count)])
+    chunk = torch.from_numpy(rows)
+    return chunk[:, :-1], chunk[:, 1:]
