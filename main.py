@@ -122,17 +122,22 @@ def command_status(config) -> int:
         ui.say("      run `make install` first", "overlay")
         return 0
 
-    from distill.config import resolve_device
+    from distill.config import device_type, resolve_device
 
     device = resolve_device(str(config.get("run.device", "auto")))
+    kind = device_type(device)
     ui.field("torch", torch.__version__)
     ui.field("device", device)
-    if device == "cuda":
+    if kind == "cuda" and torch.cuda.is_available():
+        chosen = int(device.split(":")[1]) if ":" in device \
+            else torch.cuda.current_device()
         for index in range(torch.cuda.device_count()):
             name = torch.cuda.get_device_name(index)
             total = torch.cuda.get_device_properties(index).total_memory
-            ui.say(f"      gpu {index}: {name}, {total / 2 ** 30:.0f} GB",
-                   "overlay")
+            free, _ = torch.cuda.mem_get_info(index)
+            mark = " <- selected" if index == chosen else ""
+            ui.say(f"      gpu {index}: {name}, {free / 2 ** 30:.1f} of "
+                   f"{total / 2 ** 30:.1f} GB free{mark}", "overlay")
     return 0
 
 

@@ -113,7 +113,10 @@ def load_student(config, device: str):
             param.requires_grad_(owner in binary_names)
 
     model.to(device)
-    if config.get("train.gradient_checkpointing", True) and device != "cpu":
+    from .config import device_type
+
+    if config.get("train.gradient_checkpointing", True) \
+            and device_type(device) != "cpu":
         # Reentrant checkpointing silently drops gradients when the block input
         # does not require one, which is exactly the case here: the embedding is
         # frozen. Ask for the non-reentrant path, and make the input require a

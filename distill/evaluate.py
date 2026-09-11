@@ -82,7 +82,7 @@ def run(config, checkpoint=None) -> dict:
     import torch
 
     from . import data, models
-    from .config import resolve_device, resolve_dtype
+    from .config import device_type, resolve_device, resolve_dtype
 
     device = resolve_device(str(config.get("run.device", "auto")))
     dtype = resolve_dtype(str(config.get("train.dtype", "bfloat16")), device)
@@ -113,7 +113,7 @@ def run(config, checkpoint=None) -> dict:
                      f"{scores['perplexity']:.2f}",
                      f"{scores['agreement']:.3f}", f"{scores['kl']:.4f}"))
         del naive
-        if device == "cuda":
+        if device_type(device) == "cuda":
             torch.cuda.empty_cache()
 
     if checkpoint is not None:

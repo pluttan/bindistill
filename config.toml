@@ -9,7 +9,7 @@ preset = "small"
 
 [run]
 name = "default"        # runs/<name>/ holds checkpoints, logs and metrics
-device = "auto"         # auto | cuda | mps | cpu
+device = "auto"         # auto | cuda | cuda:1 | mps | cpu
 seed = 0
 
 [paths]

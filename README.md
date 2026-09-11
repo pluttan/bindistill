@@ -157,6 +157,7 @@ make train PRESET=tiny ARGS="--set train.lr=1e-4 --set train.micro_batch=4"
 | `train.micro_batch`, `train.accum` | первое упирается в память карты, произведение задаёт размер шага |
 | `train.loss_chunk` | на сколько кусков режется словарь при подсчёте потери; уменьшают, если не хватает памяти |
 | `model.freeze_full_precision` | по умолчанию учатся только бинарные слои; эмбеддинги и голова стоят |
+| `run.device` | `auto`, либо `cuda`, `cuda:1`, `cpu`, `mps` - какой карте считать |
 
 Свой текст вместо fineweb:
 

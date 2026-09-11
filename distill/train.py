@@ -22,7 +22,7 @@ from pathlib import Path
 
 from . import checkpoint, data, models, ui
 from .binary import split_parameters
-from .config import resolve_device, resolve_dtype
+from .config import device_type, resolve_device, resolve_dtype
 
 
 class _nullcontext:
@@ -133,8 +133,13 @@ def run(config, resume: bool = True) -> Path:
     lead = rank == 0
 
     device = resolve_device(str(config.get("run.device", "auto")))
+    kind = device_type(device)
     dtype = resolve_dtype(str(config.get("train.dtype", "bfloat16")), device)
     torch.manual_seed(int(config.get("run.seed", 0)) + rank)
+    if kind == "cuda" and not distributed:
+        # Pin the default device, so scratch allocations land on the card the
+        # config asked for rather than on card zero.
+        torch.cuda.set_device(device)
 
     seq = int(config.require("train.seq"))
     micro = int(config.require("train.micro_batch"))
@@ -183,7 +188,7 @@ def run(config, resume: bool = True) -> Path:
         from torch.nn.parallel import DistributedDataParallel as DDP
 
         local = rank % max(1, torch.cuda.device_count())
-        trainable = DDP(student, device_ids=[local] if device == "cuda" else None)
+        trainable = DDP(student, device_ids=[local] if kind == "cuda" else None)
 
     stream = data.TokenWindows(config, rank=rank, world=world)
     if resume and existing is not None:
@@ -201,7 +206,7 @@ def run(config, resume: bool = True) -> Path:
     # Only CUDA gets mixed precision here: the student's master weights are
     # float32, and a float32 matmul on a GPU is both slower and larger than it
     # needs to be. On cpu and mps the cast buys nothing and costs correctness.
-    autocast_on = device == "cuda" and dtype is not torch.float32
+    autocast_on = kind == "cuda" and dtype is not torch.float32
     started = time.time()
     progress = ui.Progress("training", total_steps) if lead else None
 
@@ -221,7 +226,7 @@ def run(config, resume: bool = True) -> Path:
             last = micro_step == accum - 1
             sync = trainable.no_sync() if (distributed and not last) \
                 else _nullcontext()
-            amp = torch.autocast(device_type=device, dtype=dtype) \
+            amp = torch.autocast(device_type=kind, dtype=dtype) \
                 if autocast_on else _nullcontext()
             with sync:
                 with amp:

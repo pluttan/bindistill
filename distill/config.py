@@ -131,6 +131,15 @@ def load(path: str | os.PathLike | None = None,
 # ===  Device                ===
 # ==============================
 
+def device_type(device: str) -> str:
+    """"cuda:1" names a device, "cuda" names its type.
+
+    Autocast, DistributedDataParallel and every comparison in this package want
+    the type; only `.to()` and `set_device` want the full string with the index.
+    """
+    return device.split(":", 1)[0]
+
+
 def resolve_device(requested: str = "auto") -> str:
     """Pick a device once, here, so nothing downstream has to guess."""
     import torch
@@ -151,8 +160,9 @@ def resolve_dtype(name: str, device: str):
     table = {"bfloat16": torch.bfloat16, "float16": torch.float16,
              "float32": torch.float32}
     dtype = table.get(name, torch.bfloat16)
-    if device == "cpu" and dtype is not torch.float32:
+    kind = device_type(device)
+    if kind == "cpu" and dtype is not torch.float32:
         return torch.float32
-    if device == "mps" and dtype is torch.bfloat16:
+    if kind == "mps" and dtype is torch.bfloat16:
         return torch.float16
     return dtype

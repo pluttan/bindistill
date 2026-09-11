@@ -4,8 +4,9 @@ PIP    := $(VENV)/bin/pip
 
 PRESET ?= small
 GPUS   ?= 1
+DEVICE ?=              # e.g. DEVICE=cuda:1 to pick a card
 ARGS   ?=
-FLAGS  := --preset $(PRESET) $(ARGS)
+FLAGS  := --preset $(PRESET) $(if $(DEVICE),--set run.device=$(DEVICE)) $(ARGS)
 
 .PHONY: all install selftest status fetch train resume eval export smoke train-multi offline clean
 
