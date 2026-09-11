@@ -128,6 +128,12 @@ def command_status(config) -> int:
     kind = device_type(device)
     ui.field("torch", torch.__version__)
     ui.field("device", device)
+    if not torch.cuda.is_available():
+        from distill.train import cuda_unavailable_reason
+
+        reason = cuda_unavailable_reason()
+        if reason:
+            ui.field("no gpu", reason, "red")
     if kind == "cuda" and torch.cuda.is_available():
         chosen = int(device.split(":")[1]) if ":" in device \
             else torch.cuda.current_device()

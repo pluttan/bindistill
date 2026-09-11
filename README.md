@@ -170,6 +170,8 @@ make fetch PRESET=tiny ARGS="--set data.kind=text --set data.text_file=/путь
 | Симптом | Причина и что делать |
 |---|---|
 | `torch is not installed` в selftest | не собрано окружение, `make install` |
+| `NVIDIA driver ... is too old` | torch собран под более новую CUDA, чем позволяет драйвер. Карта не используется, всё уходит на процессор. Лечится установкой сборки torch под свою версию: `venv/bin/pip install --force-reinstall --index-url https://download.pytorch.org/whl/cu121 torch` (подставить свою версию с pytorch.org). Второй путь - обновить драйвер, но это единственное место во всей работе, где нужны права root |
+| `no accelerator` при запуске обучения | карта не видна; причина печатается строкой ниже и повторяется в `make status` |
 | `CUDA out of memory` | уменьшать `train.micro_batch`, затем `train.loss_chunk`, затем `train.seq`. Как считать — ниже |
 | перплексия студента не падает | поднять `train.lr`; проверить, что `model.ste_clip` не слишком мал |
 | обученная модель хуже наивной | почти всегда слишком большая скорость обучения — знаки скачут каждый шаг |

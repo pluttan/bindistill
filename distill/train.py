@@ -122,6 +122,21 @@ def distributed_setup() -> tuple[int, int, bool]:
     return rank, world, world > 1
 
 
+def cuda_unavailable_reason() -> str:
+    """Why torch sees no card. The driver message only appears on first use."""
+    import torch
+
+    if torch.cuda.is_available():
+        return ""
+    if not getattr(torch.version, "cuda", None):
+        return "this torch build has no CUDA support (cpu-only wheel)"
+    try:
+        torch.cuda.init()
+    except Exception as problem:  # noqa: BLE001 - the text is the diagnosis
+        return f"torch built for CUDA {torch.version.cuda}, but: {problem}"
+    return f"torch built for CUDA {torch.version.cuda}, no card visible"
+
+
 # ==============================
 # ===  Loop                  ===
 # ==============================
@@ -163,6 +178,17 @@ def run(config, resume: bool = True) -> Path:
         ui.field("steps planned", total_steps)
         ui.field("token budget", f"{budget / 1e9:.3f}B")
         ui.field("run directory", run_dir)
+
+    if lead and kind == "cpu":
+        # A run that quietly lands on the processor looks identical to a slow
+        # one for the first hour, and then for the next twenty.
+        ui.fail("no accelerator: this run is on the processor and will take "
+                "orders of magnitude longer")
+        why = cuda_unavailable_reason()
+        if why:
+            ui.say(f"      {why}", "overlay")
+        ui.say("      check `make status`; set run.device to force a card",
+               "overlay")
 
     teacher = models.load_teacher(config, device, dtype)
     student, replaced = models.load_student(config, device)
