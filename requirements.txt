@@ -1,4 +1,13 @@
-torch>=2.4
+# torch is deliberately not pinned here. The package version is not the problem
+# — the CUDA build is: the default wheel targets a recent CUDA and refuses to
+# initialise on an older driver, falling back to the processor without an error.
+# It is installed separately so the build can be chosen per machine:
+#
+#   make install CUDA=cu121      fresh environment, wheel for CUDA 12.1
+#   make torch   CUDA=cu121      swap the build in an environment that exists
+#
+# Leave CUDA empty for the default build, or set it to cu118, cu121, cu124, cu128
+# to match the driver. `make status` prints what torch was built for.
 transformers>=4.44
 safetensors>=0.4.3
 huggingface_hub>=0.24

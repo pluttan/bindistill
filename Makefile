@@ -1,19 +1,33 @@
 VENV   := venv
-PY     := $(VENV)/bin/python3.12
+# The environment is built with python3.12, but the interpreter inside it is
+# addressed without a version: a venv made by another 3.x still works, and every
+# target keeps running instead of failing on a missing file name.
+PY     := $(VENV)/bin/python
 PIP    := $(VENV)/bin/pip
 
 PRESET ?= small
 GPUS   ?= 1
 DEVICE ?=              # e.g. DEVICE=cuda:1 to pick a card
+CUDA   ?=              # e.g. CUDA=cu121 to match an older driver
 ARGS   ?=
 FLAGS  := --preset $(PRESET) $(if $(DEVICE),--set run.device=$(DEVICE)) $(ARGS)
 
-.PHONY: all install selftest status fetch train resume eval export smoke train-multi offline clean
+TORCH_INDEX := $(if $(CUDA),--index-url https://download.pytorch.org/whl/$(CUDA))
+
+.PHONY: all install torch selftest status fetch train resume eval export smoke train-multi offline clean
 
 all: install selftest
 
 install:
-	python3.12 -m venv $(VENV) && $(PIP) install -U pip && $(PIP) install -r requirements.txt
+	python3.12 -m venv $(VENV) && $(PIP) install -U pip
+	$(PIP) install $(TORCH_INDEX) torch
+	$(PIP) install -r requirements.txt
+
+# Swap the torch build without rebuilding the environment. Use when the driver
+# is older than the default wheel expects.
+torch:
+	$(PIP) install --force-reinstall $(TORCH_INDEX) torch
+	$(PY) -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda, 'available', torch.cuda.is_available())"
 
 # Everything that can be checked without a download. Run this first.
 selftest:
