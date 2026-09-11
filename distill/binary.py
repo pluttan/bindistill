@@ -32,7 +32,11 @@ def pick_group(width: int, preferred: int = DEFAULT_GROUP) -> int:
     a smaller group instead costs a little in bits per weight and nothing in
     correctness.
     """
-    group = min(preferred, width)
+    ceiling = min(preferred, width)
+    # Start at a power of two: min(preferred, width) is not necessarily one, and
+    # starting there returns the width itself whenever it divides itself — a
+    # single group per row, which is not what the caller asked for.
+    group = 1 << (ceiling.bit_length() - 1)
     while group > 1 and width % group != 0:
         group //= 2
     return max(1, group)

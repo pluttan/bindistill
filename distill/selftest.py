@@ -12,6 +12,8 @@ is started.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import tempfile
 from pathlib import Path
 
@@ -35,13 +37,18 @@ def case(name: str):
 def _groups():
     from .binary import pick_group
 
-    assert pick_group(1024) == 128
-    assert pick_group(576) == 64, pick_group(576)
-    assert pick_group(3072) == 128
-    assert pick_group(100) == 4, pick_group(100)
-    assert pick_group(7) == 1
-    for width in (64, 100, 576, 1024, 1536, 3072, 8192):
-        assert width % pick_group(width) == 0
+    for width, wanted in ((1024, 128), (3072, 128), (1536, 128), (2048, 128),
+                          (576, 64), (100, 4), (7, 1), (1, 1)):
+        got = pick_group(width)
+        assert got == wanted, f"pick_group({width}) gave {got}, wanted {wanted}"
+
+    # The contract is three things at once, and a width that happens to divide
+    # itself can satisfy the first while quietly breaking the other two.
+    for width in list(range(1, 600)) + [1024, 1536, 2048, 3072, 4096, 8192]:
+        group = pick_group(width)
+        assert width % group == 0, f"group {group} does not divide {width}"
+        assert group & (group - 1) == 0, f"group {group} is not a power of two"
+        assert group <= 128, f"group {group} exceeds the preferred 128"
 
 
 @case("forward really is one bit per weight")
@@ -277,7 +284,8 @@ def _split():
             "data.kind=text", f"data.text_file={sample}",
             "data.train_tokens=40000", "data.eval_tokens=8000",
             "train.seq=64", f"paths.corpus={root}"])
-        data.build_corpus(loaded, FakeTokenizer())
+        with contextlib.redirect_stdout(io.StringIO()):
+            data.build_corpus(loaded, FakeTokenizer())
 
         tokens = data.open_corpus(loaded)
         assert len(tokens) == 48000, len(tokens)
