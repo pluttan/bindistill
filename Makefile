@@ -26,7 +26,7 @@ fetch:
 	$(PY) main.py fetch $(FLAGS)
 
 train:
-	$(PY) main.py train $(FLAGS)
+	PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True $(PY) main.py train $(FLAGS)
 
 # Same as train; it always continues from the newest checkpoint.
 resume: train
@@ -46,6 +46,7 @@ smoke:
 
 # Several cards on one machine.
 train-multi:
+	PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
 	$(VENV)/bin/torchrun --nproc_per_node=$(GPUS) main.py train $(FLAGS)
 
 # Prove the folder works with the network unplugged.

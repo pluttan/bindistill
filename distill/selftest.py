@@ -173,6 +173,12 @@ def _surgery():
 
 @case("chunked loss gradient equals the whole-sequence one")
 def _chunked_loss():
+    for temperature in (1.3, 1.0):
+        _chunked_loss_at(temperature)
+
+
+def _chunked_loss_at(temperature: float):
+    """Temperature 1.0 takes a different branch for the cross-entropy term."""
     import torch
     import torch.nn.functional as F
 
@@ -180,7 +186,7 @@ def _chunked_loss():
 
     torch.manual_seed(0)
     batch, length, vocab = 2, 24, 50
-    alpha, temperature, chunk = 0.7, 1.3, 7
+    alpha, chunk = 0.7, 7
 
     teacher = torch.randn(batch, length, vocab)
     gold = torch.randint(0, vocab, (batch, length))

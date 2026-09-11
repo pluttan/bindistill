@@ -92,8 +92,9 @@ teacher = "HuggingFaceTB/SmolLM2-135M"
 train_tokens = 300_000_000
 [presets.tiny.train]
 seq = 1024
-micro_batch = 8
-accum = 4
+micro_batch = 2      # 8 did not fit in 8 GB: the logits alone are 768 MB a copy
+accum = 16           # same 32.8k tokens per step as before
+loss_chunk = 128
 max_tokens = 2.0e8
 lr = 3e-4
 

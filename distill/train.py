@@ -56,24 +56,36 @@ def distil_backward(student_logits, teacher_logits, targets, alpha: float,
 
     for start in range(0, length, chunk):
         stop = min(length, start + chunk)
-        piece = detached[:, start:stop].clone().requires_grad_(True)
-        with torch.no_grad():
-            reference = teacher_logits[:, start:stop].float()
+        # A slice of the detached logits shares its storage, so taking a leaf
+        # here costs nothing; cloning it used to cost a full copy per chunk.
+        piece = detached[:, start:stop].detach().requires_grad_(True)
         gold = targets[:, start:stop]
-        share = (stop - start) * detached.shape[0] / total
+        rows = (stop - start) * detached.shape[0]
+        share = rows / total
 
-        student_log = F.log_softmax(piece.float() / temperature, dim=-1)
-        teacher_log = F.log_softmax(reference / temperature, dim=-1)
-        kl = (teacher_log.exp() * (teacher_log - student_log)).sum(-1).mean()
+        # One float32 cast, reused. At a vocabulary this size each cast is
+        # larger than the model, and the naive version made six of them.
+        piece_float = piece.float()
+        student_log = F.log_softmax(piece_float / temperature, dim=-1)
+        with torch.no_grad():
+            teacher_log = F.log_softmax(
+                teacher_logits[:, start:stop].float() / temperature, dim=-1)
+
+        kl = F.kl_div(student_log, teacher_log, reduction="sum",
+                      log_target=True) / rows
         kl = kl * temperature * temperature
-        ce = F.cross_entropy(piece.float().flatten(0, 1), gold.flatten())
+        if temperature == 1.0:
+            # log_softmax is already there; cross_entropy would redo it.
+            ce = F.nll_loss(student_log.flatten(0, 1), gold.flatten())
+        else:
+            ce = F.cross_entropy(piece_float.flatten(0, 1), gold.flatten())
 
         loss = (alpha * kl + (1.0 - alpha) * ce) * share
         loss.backward()
         grad[:, start:stop] = piece.grad
         kl_sum += kl.item() * share
         ce_sum += ce.item() * share
-        del piece, student_log, teacher_log, reference
+        del piece, piece_float, student_log, teacher_log
 
     student_logits.backward(grad)
     return kl_sum, ce_sum
