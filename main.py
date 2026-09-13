@@ -50,6 +50,11 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--checkpoint", default=None)
     add_common(evaluate, subcommand=True)
 
+    profile = sub.add_parser(
+        "profile", help="what the training left in the weights")
+    profile.add_argument("--checkpoint", default=None)
+    add_common(profile, subcommand=True)
+
     export = sub.add_parser("export", help="write the trained model out")
     export.add_argument("--checkpoint", default=None)
     export.add_argument("--out", default=None)
@@ -172,6 +177,16 @@ def command_eval(config, given: str | None) -> int:
     return 0
 
 
+def command_profile(config, given: str | None) -> int:
+    from distill import profile
+
+    source = resolve_checkpoint(config, given)
+    if source is None:
+        return 1
+    profile.run(config, source)
+    return 0
+
+
 def command_export(config, given: str | None, out: str | None) -> int:
     from distill import export
 
@@ -204,6 +219,8 @@ def main(argv: list[str] | None = None) -> int:
         return command_train(config, args.fresh)
     if args.command == "eval":
         return command_eval(config, args.checkpoint)
+    if args.command == "profile":
+        return command_profile(config, args.checkpoint)
     if args.command == "export":
         return command_export(config, args.checkpoint, args.out)
     return 1

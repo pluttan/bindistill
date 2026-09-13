@@ -14,7 +14,7 @@ FLAGS  := --preset $(PRESET) $(if $(DEVICE),--set run.device=$(DEVICE)) $(ARGS)
 
 TORCH_INDEX := $(if $(CUDA),--index-url https://download.pytorch.org/whl/$(CUDA))
 
-.PHONY: all install torch selftest status fetch train resume eval export smoke train-multi offline clean
+.PHONY: all install torch selftest status fetch train resume eval profile export smoke train-multi offline clean
 
 all: install selftest
 
@@ -48,6 +48,10 @@ resume: train
 
 eval:
 	$(PY) main.py eval $(FLAGS)
+
+# Does our own result carry the signature we used to argue Bonsai was trained?
+profile:
+	$(PY) main.py profile $(FLAGS)
 
 export:
 	$(PY) main.py export $(FLAGS)
