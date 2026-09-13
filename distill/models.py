@@ -13,6 +13,7 @@ the folder can be copied to a stick and used on a machine with no network.
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 from . import ui
@@ -59,14 +60,26 @@ def local_dir(config) -> Path:
     return config.path("paths.models") / name
 
 
+def _log_remote_files(repo: str) -> None:
+    """What the hub says should arrive, so a short download is obvious."""
+    try:
+        from huggingface_hub import HfApi
+
+        info = HfApi().model_info(repo, files_metadata=True)
+        for item in info.siblings or []:
+            size = getattr(item, "size", None)
+            room = f"{size / 2 ** 20:.1f} MB" if size else "size unknown"
+            ui.detail(f"  remote {item.rfilename} {room}")
+    except Exception as problem:  # noqa: BLE001 - a listing is a nicety
+        ui.detail(f"could not list remote files: {problem}")
+
+
 def folder_size(path: Path) -> int:
     return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
 
 
 def fetch_model(config) -> Path:
     """Download the checkpoint into the package. Safe to re-run."""
-    import time
-
     from huggingface_hub import snapshot_download
 
     repo = str(config.require("model.teacher"))
@@ -74,6 +87,7 @@ def fetch_model(config) -> Path:
     target.mkdir(parents=True, exist_ok=True)
     attempts = max(1, int(config.get("data.retries", 5)))
 
+    workers = int(config.get("data.workers", 4))
     for attempt in range(1, attempts + 1):
         ui.step(f"downloading {repo}")
         # The progress bar reaches 100% when the bytes are in; hashing them and
@@ -81,12 +95,25 @@ def fetch_model(config) -> Path:
         # screen. On a slow disk it looks like a hang, so say what is going on.
         ui.say("      after the bar fills, files are checked and unpacked - "
                "this part is silent", "overlay")
+        ui.detail(f"attempt {attempt}/{attempts}, {workers} workers, "
+                  f"into {target}")
+        ui.detail(f"on disk before: {folder_size(target) / 2 ** 20:.1f} MB")
+        started = time.time()
         try:
+            _log_remote_files(repo)
             snapshot_download(repo, local_dir=str(target),
                               allow_patterns=KEEP, ignore_patterns=DROP,
-                              max_workers=int(config.get("data.workers", 4)))
+                              max_workers=workers)
+            ui.detail(f"download returned after {time.time() - started:.0f}s")
+            for item in sorted(target.rglob("*")):
+                if item.is_file():
+                    ui.detail(f"  {item.relative_to(target)} "
+                              f"{item.stat().st_size / 2 ** 20:.1f} MB")
             break
         except (OSError, EOFError) as problem:
+            ui.detail(f"failed after {time.time() - started:.0f}s: "
+                      f"{type(problem).__name__}: {problem}")
+            ui.detail(f"on disk now: {folder_size(target) / 2 ** 20:.1f} MB")
             if attempt == attempts:
                 raise
             delay = min(60.0, 5.0 * 2 ** (attempt - 1))

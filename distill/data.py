@@ -178,8 +178,11 @@ def _shard_batches(open_lines, url: str, skip: int, attempts: int,
             if batch:
                 done = seen
                 yield seen, batch
+            ui.detail(f"finished {url.split('/')[-1]} at line {seen}")
             return
         except NETWORK_TROUBLE as problem:
+            ui.detail(f"broke at line {seen} of {url.split('/')[-1]}: "
+                      f"{type(problem).__name__}: {problem}")
             if batch:
                 done = seen
                 yield seen, batch
@@ -206,6 +209,8 @@ def _dolma_documents(config, start_shard: int, skip: int):
     while index < len(urls):
         url = urls[index]
         ui.step(f"streaming {url.split('/')[-2]}/{url.split('/')[-1]}")
+        ui.detail(f"file {index + 1} of {len(urls)}, resuming at line {skip}")
+        ui.detail(f"url {url}")
         for seen, batch in _shard_batches(
                 lambda u: _shard_lines(u, timeout), url, skip, attempts,
                 time.sleep):
@@ -272,6 +277,10 @@ def build_corpus(config, tokenizer) -> Path:
 
     progress = ui.Progress("tokenising", target)
     written = int(note["written"])
+    last_note, last_written = time.time(), written
+    ui.detail(f"corpus file {array_path} target {target} tokens "
+              f"({target * np.dtype(dtype).itemsize / 2 ** 30:.2f} GB), "
+              f"starting at {written}")
     try:
         for shard, row, texts in reader(config, int(note["shard"]), int(note["row"])):
             encoded = tokenizer(texts, add_special_tokens=False)["input_ids"]
@@ -285,6 +294,12 @@ def build_corpus(config, tokenizer) -> Path:
             note.update({"written": written, "shard": shard, "row": row})
             note_path.write_text(json.dumps(note, indent=2))
             progress.update(written)
+            now = time.time()
+            if now - last_note >= 60:
+                rate = (written - last_written) / max(1e-6, now - last_note)
+                ui.detail(f"{written / 1e6:.1f}M tokens, shard {shard}, "
+                          f"line {row}, {rate / 1e3:.1f}k tokens/s")
+                last_note, last_written = now, written
             if written >= target:
                 break
     finally:

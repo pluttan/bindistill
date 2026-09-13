@@ -26,6 +26,9 @@ def add_common(parser: argparse.ArgumentParser, subcommand: bool) -> None:
     parser.add_argument("--set", dest="overrides", action="append",
                         default=(argparse.SUPPRESS if subcommand else []),
                         metavar="KEY=VALUE", help="override one setting")
+    parser.add_argument("--verbose", action="store_true",
+                        default=(argparse.SUPPRESS if subcommand else False),
+                        help="print everything that goes to the log")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -197,6 +200,32 @@ def command_export(config, given: str | None, out: str | None) -> int:
     return 0
 
 
+def describe_environment(config) -> None:
+    """The facts a report needs and nobody remembers to include."""
+    import os
+    import platform
+
+    ui.detail(f"python {platform.python_version()} on {platform.platform()}")
+    ui.detail(f"argv {' '.join(sys.argv[1:])}")
+    for name in ("huggingface_hub", "transformers", "torch", "numpy"):
+        try:
+            module = __import__(name)
+            ui.detail(f"{name} {getattr(module, '__version__', '?')}")
+        except Exception as problem:  # noqa: BLE001 - absence is the answer
+            ui.detail(f"{name} missing ({problem})")
+    for name in ("HF_HOME", "HF_HUB_CACHE", "HF_HUB_DOWNLOAD_TIMEOUT",
+                 "HF_HUB_OFFLINE", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY"):
+        if os.environ.get(name):
+            ui.detail(f"{name}={os.environ[name]}")
+    for key in ("paths.models", "paths.corpus", "paths.cache", "paths.runs"):
+        try:
+            place = config.path(key)
+            ui.detail(f"{key} {place} "
+                      f"({'writable' if os.access(place.parent, os.W_OK) else 'NOT writable'})")
+        except Exception as problem:  # noqa: BLE001
+            ui.detail(f"{key} unavailable ({problem})")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -215,11 +244,20 @@ def main(argv: list[str] | None = None) -> int:
     # once, at import time.
     from distill import models
 
+    # A transcript of every run, so a failure can be read after the fact
+    # instead of reproduced. --verbose puts the same detail on screen.
+    log = ui.log_to(config.path("paths.runs") / f"{args.command}.log",
+                    getattr(args, "verbose", False))
+
     try:
         models.use_local_cache(config)
     except PermissionError as problem:
         ui.fail(str(problem))
         return 1
+
+    if log is not None:
+        ui.detail(f"log {log}")
+        describe_environment(config)
 
     if args.command == "status":
         return command_status(config)

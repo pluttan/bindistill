@@ -28,8 +28,48 @@ def paint(text: str, colour: str) -> str:
     return f"\x1b[38;2;{r};{g};{b}m{text}\x1b[0m"
 
 
+# Everything printed goes through say(), so a transcript can be taken here
+# rather than at every call site.
+_LOG = None
+
+
+def log_to(path, verbose: bool = False):
+    """Start writing a timestamped copy of the output to a file.
+
+    Returns the path, or None when it cannot be opened - a missing log is
+    never a reason to fail the command it was meant to record.
+    """
+    global _LOG, _VERBOSE
+
+    from pathlib import Path
+
+    target = Path(path)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _LOG = open(target, "a", encoding="utf-8", buffering=1)
+    except OSError:
+        _LOG = None
+        return None
+    _VERBOSE = verbose
+    _LOG.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
+    return target
+
+
+_VERBOSE = False
+
+
+def detail(text: str) -> None:
+    """A line for the log. It reaches the screen only with --verbose."""
+    if _VERBOSE:
+        say(f"  {text}", "overlay")
+    elif _LOG is not None:
+        _LOG.write(f"{time.strftime('%H:%M:%S')}  {text}\n")
+
+
 def say(text: str = "", colour: str = "text") -> None:
     print(paint(text, colour), flush=True)
+    if _LOG is not None:
+        _LOG.write(f"{time.strftime('%H:%M:%S')}  {text}\n")
 
 
 def head(text: str) -> None:
