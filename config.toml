@@ -47,13 +47,26 @@ alpha = 0.9             # weight on the teacher's distribution vs. the real toke
 temperature = 1.0
 max_tokens = 3.0e8      # stop here; a checkpoint is written first
 
-# Stop earlier when the run stops paying for itself: if held-out perplexity
-# is falling by less than this many points per hour, training ends and the
-# final checkpoint is written. Zero means run to max_tokens regardless.
-# The rate is measured against the oldest check at least a window back, so a
-# single noisy evaluation cannot end the run.
-min_improvement_per_hour = 0.0
-improvement_window_hours = 1.0
+# Stop when the run stops paying for itself: if held-out perplexity is falling
+# by less than this many points per hour, training ends and the final
+# checkpoint is written. Zero disables it and runs to max_tokens.
+# 0.05 is a backstop rather than a dial - replayed against a real 300M-token
+# run it never fires, because that run never fell slower than 0.25 an hour.
+# It ends the runs that have genuinely flattened out, and leaves the rest to
+# max_tokens. Raise it to 0.3 to cut the tail short: same run, two hours less,
+# two tenths of a perplexity point given up.
+min_improvement_per_hour = 0.05
+
+# How many hours the rate is measured over. Three, not one: replaying the same
+# run with a one-hour window, a single noisy check in hour five reads as a
+# stall and ends the run 190M tokens and six perplexity points early.
+improvement_window_hours = 3.0
+
+# How many checks in a row must be below the threshold. Checks scatter by more
+# than a low threshold is worth: around a true rate of 0.05 an hour, a single
+# unlucky measurement reads as a stall. Two in a row costs one evaluation and
+# makes the low threshold usable.
+stop_patience = 2
 
 dtype = "bfloat16"
 gradient_checkpointing = true

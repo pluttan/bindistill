@@ -120,18 +120,35 @@ def learning_rate_factor(step: int, warmup: int, total: int,
 # ===  Distributed           ===
 # ==============================
 
-def distributed_setup() -> tuple[int, int, bool]:
+def distributed_setup() -> tuple[int, int, int, bool]:
     """torchrun sets these; without it the run is plain single-process."""
     world = int(os.environ.get("WORLD_SIZE", "1"))
     rank = int(os.environ.get("RANK", "0"))
+    # LOCAL_RANK, not RANK: on one machine they agree, across machines only
+    # the local one names a card on this box.
+    local = int(os.environ.get("LOCAL_RANK", rank))
     if world > 1:
         import torch
         import torch.distributed as dist
 
         dist.init_process_group("nccl" if torch.cuda.is_available() else "gloo")
         if torch.cuda.is_available():
-            torch.cuda.set_device(rank % torch.cuda.device_count())
-    return rank, world, world > 1
+            local %= torch.cuda.device_count()
+            torch.cuda.set_device(local)
+    return rank, local, world, world > 1
+
+
+def rank_device(requested: str, local: int, distributed: bool) -> str:
+    """Which card this process owns.
+
+    Under torchrun every process must take a different card. A configured
+    index says which card a single run should use, and honouring it here would
+    put every process on that one card: two copies of the model on one card,
+    the other cards idle, and most likely out of memory.
+    """
+    if not distributed or device_type(requested) != "cuda":
+        return requested
+    return f"cuda:{local}"
 
 
 def cuda_unavailable_reason() -> str:
@@ -151,16 +168,20 @@ def cuda_unavailable_reason() -> str:
 
 def improvement_per_hour(history: list[tuple[float, float]],
                         window: float) -> float | None:
-    """Perplexity points per hour, measured against the oldest point outside
-    the window. None while there is not yet a full window to judge by.
+    """Perplexity points per hour over the last `window` hours. None while
+    there is not yet a full window to judge by.
 
-    Judging against the previous measurement instead would read noise: two
-    checks minutes apart differ by less than the run-to-run wobble.
+    The anchor is the most recent check that is still at least a window old.
+    Judging against the previous check instead would read noise: two checks
+    minutes apart differ by less than the run-to-run wobble. Reaching all the
+    way back to the first check would be worse still - early training falls
+    steeply, so the average since the start stays high long after the run has
+    flattened out, and the threshold would never fire.
     """
     if len(history) < 2:
         return None
     latest_at, latest = history[-1]
-    for stamp, score in history:
+    for stamp, score in reversed(history[:-1]):
         if latest_at - stamp >= window * 3600:
             elapsed_hours = (latest_at - stamp) / 3600
             return (score - latest) / elapsed_hours
@@ -202,10 +223,14 @@ def fit_micro_batch(trial, wanted: int, budget: int, device: str) -> int:
 def run(config, resume: bool = True) -> Path:
     import torch
 
-    rank, world, distributed = distributed_setup()
+    rank, local_rank, world, distributed = distributed_setup()
     lead = rank == 0
 
-    device = resolve_device(str(config.get("run.device", "auto")))
+    asked = resolve_device(str(config.get("run.device", "auto")))
+    device = rank_device(asked, local_rank, distributed)
+    if lead and device != asked:
+        ui.warn(f"{asked} was asked for, but this run spans {world} processes "
+                f"- each takes its own card, starting at cuda:0")
     kind = device_type(device)
     dtype = resolve_dtype(str(config.get("train.dtype", "bfloat16")), device)
     torch.manual_seed(int(config.get("run.seed", 0)) + rank)
@@ -226,6 +251,11 @@ def run(config, resume: bool = True) -> Path:
     per_step = micro * accum * seq * world
     budget_tokens = int(float(config.require("train.max_tokens")))
     total_steps = max(1, budget_tokens // per_step)
+
+    objective = str(config.get("train.objective", "distill")).lower()
+    if objective not in ("distill", "language"):
+        raise ValueError(f"train.objective must be distill or language, "
+                         f"got '{objective}'")
 
     run_dir = config.run_dir()
     if lead:
@@ -250,10 +280,6 @@ def run(config, resume: bool = True) -> Path:
         ui.say("      check `make status`; set run.device to force a card",
                "overlay")
 
-    objective = str(config.get("train.objective", "distill")).lower()
-    if objective not in ("distill", "language"):
-        raise ValueError(f"train.objective must be distill or language, "
-                         f"got '{objective}'")
     teacher = models.load_teacher(config, device, dtype) \
         if objective == "distill" else None
     student, replaced = models.load_student(config, device)
@@ -287,8 +313,8 @@ def run(config, resume: bool = True) -> Path:
     if distributed:
         from torch.nn.parallel import DistributedDataParallel as DDP
 
-        local = rank % max(1, torch.cuda.device_count())
-        trainable = DDP(student, device_ids=[local] if kind == "cuda" else None)
+        trainable = DDP(student,
+                        device_ids=[local_rank] if kind == "cuda" else None)
 
     stream = data.TokenWindows(config, rank=rank, world=world)
     if resume and existing is not None:
@@ -303,13 +329,18 @@ def run(config, resume: bool = True) -> Path:
     keep = int(config.get("train.keep_checkpoints", 3))
 
     min_gain = float(config.get("train.min_improvement_per_hour", 0.0))
-    gain_window = float(config.get("train.improvement_window_hours", 1.0))
+    gain_window = float(config.get("train.improvement_window_hours", 3.0))
+    gain_patience = int(config.get("train.stop_patience", 2))
     history: list[tuple[float, float]] = []
+    slow_streak = 0
     stopped_early = False
     last_step = total_steps
     if min_gain > 0 and not eval_every:
-        raise ValueError("train.min_improvement_per_hour needs held-out checks "
-                         "to judge by, but train.eval_every is 0")
+        # This is on by default, so a run with the checks switched off should
+        # carry on to max_tokens rather than refuse to start.
+        ui.warn("train.eval_every is 0, so there is nothing to judge progress "
+                "by - training will run to train.max_tokens")
+        min_gain = 0.0
 
     student.train()
 
@@ -420,7 +451,8 @@ def run(config, resume: bool = True) -> Path:
             history.append((time.time(), score["perplexity"]))
             gain = improvement_per_hour(history, gain_window)
 
-            record = {"step": step, "tokens": seen, "eval": True, **score}
+            record = {"step": step, "tokens": seen, "eval": True,
+                      "elapsed": round(time.time() - started, 1), **score}
             if gain is not None:
                 record["perplexity_gain_per_hour"] = round(gain, 4)
             metrics.write(record)
@@ -433,11 +465,18 @@ def run(config, resume: bool = True) -> Path:
             if gain is not None:
                 ui.field("gain per hour", f"{gain:+.3f} perplexity", "peach")
 
-            if min_gain > 0 and gain is not None and gain < min_gain:
-                ui.say()
-                ui.warn(f"perplexity is improving by {gain:.3f} per hour, less "
-                        f"than the {min_gain:.3f} asked for - stopping here")
-                stopped_early = True
+            if min_gain > 0 and gain is not None:
+                slow_streak = slow_streak + 1 if gain < min_gain else 0
+                if 0 < slow_streak < gain_patience:
+                    ui.field("below the threshold",
+                             f"{slow_streak} of {gain_patience} checks",
+                             "yellow")
+                if slow_streak >= gain_patience:
+                    ui.say()
+                    ui.warn(f"perplexity is improving by {gain:.3f} per hour, "
+                            f"less than the {min_gain:.3f} asked for, "
+                            f"{gain_patience} checks running - stopping here")
+                    stopped_early = True
 
         if lead and save_every and step and step % save_every == 0:
             checkpoint.save(run_dir, student, optimizer, step, seen, keep,

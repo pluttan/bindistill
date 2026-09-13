@@ -15,14 +15,25 @@ PIP    := $(VENV)/bin/pip
 PRESET ?= small
 AUTO_OR_SMALL := $(if $(AUTO_PRESET),$(AUTO_PRESET),small)
 CHOSEN := $(if $(filter auto,$(strip $(PRESET))),$(AUTO_OR_SMALL),$(strip $(PRESET)))
-GPUS   ?= 1
-# GPU=1 picks the second card, DEVICE=cuda:1 is the long form of the same.
-# CUDA=cu121 forces a torch build. `make detect` lists the cards and indices.
+# GPU=1 picks the second card; GPU=0,2 hands train-multi exactly those two.
+# DEVICE=cuda:1 is the long form of a single card. CUDA=cu121 forces a torch
+# build. `make detect` lists the cards with their indices.
 # Trailing comments are kept off these lines on purpose: make would take the
 # spaces before the "#" as part of the value, and an "empty" variable holding a
 # space is treated as set.
 GPU    ?=
-DEVICE ?= $(if $(strip $(GPU)),cuda:$(strip $(GPU)))
+COMMA  := ,
+# These are immediate assignments, so GPU and COMMA have to exist by now.
+GPU_LIST := $(subst $(COMMA), ,$(strip $(GPU)))
+MANY := $(word 2,$(GPU_LIST))
+
+# A list of cards goes through CUDA_VISIBLE_DEVICES, and each process then
+# takes cuda:0, cuda:1 ... of what it can see - so run.device must stay unset.
+DEVICE ?= $(if $(MANY),,$(if $(strip $(GPU)),cuda:$(strip $(GPU))))
+VISIBLE := $(if $(MANY),CUDA_VISIBLE_DEVICES=$(strip $(GPU)))
+# How many processes train-multi starts: taken from the list when there is
+# one, so the count and the cards can never disagree.
+GPUS   ?= $(if $(MANY),$(words $(GPU_LIST)),1)
 CUDA   ?= $(AUTO_CUDA)
 ARGS   ?=
 
@@ -120,8 +131,9 @@ smoke:
 
 # Several cards on one machine.
 train-multi:
-	PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-	$(VENV)/bin/torchrun --nproc_per_node=$(GPUS) main.py train $(FLAGS)
+	$(VISIBLE) PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+	$(VENV)/bin/torchrun --nproc_per_node=$(GPUS) main.py train \
+	    $(FLAGS) $(DATA_ARGS)
 
 # Prove the folder works with the network unplugged.
 offline:

@@ -378,10 +378,118 @@ def _gain():
     # A half-hour window sees the same run sooner.
     assert improvement_per_hour(steady, 0.5) is not None
 
+    # The anchor is the most recent check a window old, not the first one.
+    # Training falls steeply at the start, so averaging since the beginning
+    # would report a run as improving long after it had flattened out.
+    settled = [(0.0, 100.0), (hour, 40.0), (2 * hour, 39.0), (3 * hour, 38.0)]
+    rate = improvement_per_hour(settled, 1.0)
+    assert abs(rate - 1.0) < 1e-9, rate
+
+
+@case("a lone slow check does not end the run")
+def _patience():
+    """The streak rule the loop applies, on the numbers it applies it to.
+
+    Checks scatter by more than a low threshold is worth, so one reading below
+    it has to be survivable; two in a row has to stop.
+    """
+    threshold, patience = 0.05, 2
+
+    def stops_at(rates):
+        streak = 0
+        for i, r in enumerate(rates):
+            streak = streak + 1 if r < threshold else 0
+            if streak >= patience:
+                return i
+        return None
+
+    # A real run's tail, with one unlucky measurement in the middle of it.
+    assert stops_at([0.4, 0.5, 0.01, 0.45, 0.3]) is None
+    # Genuinely flat: two in a row, and it ends on the second.
+    assert stops_at([0.4, 0.3, 0.02, 0.01, 0.3]) == 3
+    # Perplexity moving the wrong way twice counts as flat too.
+    assert stops_at([0.4, -0.1, -0.2]) == 2
+    # Nothing below the threshold, nothing happens.
+    assert stops_at([0.4, 0.3, 0.06, 0.51]) is None
+
 
 # ==============================
 # ===  Plumbing              ===
 # ==============================
+
+@case("each process of a multi-card run takes its own card")
+def _rank_device():
+    from .train import rank_device
+
+    # One process: whatever was asked for, including an explicit index.
+    assert rank_device("cuda", 0, False) == "cuda"
+    assert rank_device("cuda:1", 0, False) == "cuda:1"
+    assert rank_device("cpu", 0, False) == "cpu"
+
+    # Several processes: one card each, by local rank. Honouring a configured
+    # index here would put every process on that one card - two copies of the
+    # model on it, the rest idle, and most likely out of memory.
+    assert rank_device("cuda", 0, True) == "cuda:0"
+    assert rank_device("cuda", 1, True) == "cuda:1"
+    assert rank_device("cuda:1", 0, True) == "cuda:0"
+    assert rank_device("cuda:1", 1, True) == "cuda:1"
+
+    # Nothing to spread over on a processor or on mps.
+    assert rank_device("cpu", 1, True) == "cpu"
+    assert rank_device("mps", 1, True) == "mps"
+
+
+@case("no name is read before it is assigned")
+def _unbound():
+    """A banner that prints a variable defined further down raises
+    UnboundLocalError the moment the command runs, and nothing short of
+    actually running it notices. This reads the syntax tree instead, so the
+    check works on a machine with no card and no torch.
+    """
+    import ast
+
+    scopes = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef,
+              ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+
+    def own(fn):
+        # Everything in this function except nested scopes: a comprehension
+        # binds its own names, and a nested def runs later, not here.
+        stack = list(ast.iter_child_nodes(fn))
+        while stack:
+            node = stack.pop()
+            if isinstance(node, scopes):
+                continue
+            yield node
+            stack.extend(ast.iter_child_nodes(node))
+
+    root = Path(__file__).resolve().parent.parent
+    problems = []
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(), str(path))
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            stored, loaded = {}, {}
+            for node in own(fn):
+                if isinstance(node, ast.Name) and isinstance(
+                        node.ctx, (ast.Store, ast.Load)):
+                    side = stored if isinstance(node.ctx, ast.Store) else loaded
+                    side[node.id] = min(side.get(node.id, 1 << 30), node.lineno)
+                elif isinstance(node, (ast.Global, ast.Nonlocal)):
+                    for name in node.names:
+                        stored[name] = 0
+            names = {a.arg for a in fn.args.args + fn.args.kwonlyargs
+                     + fn.args.posonlyargs}
+            for extra in (fn.args.vararg, fn.args.kwarg):
+                if extra:
+                    names.add(extra.arg)
+            for name, store in stored.items():
+                first = loaded.get(name)
+                if name not in names and first is not None and first < store:
+                    problems.append(f"{path.name}:{first} {fn.name}(): "
+                                    f"'{name}' read before line {store}")
+    assert not problems, "; ".join(problems)
+
 
 @case("config presets and overrides apply")
 def _config():
