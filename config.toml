@@ -46,6 +46,15 @@ grad_clip = 1.0
 alpha = 0.9             # weight on the teacher's distribution vs. the real token
 temperature = 1.0
 max_tokens = 3.0e8      # stop here; a checkpoint is written first
+
+# Stop earlier when the run stops paying for itself: if held-out perplexity
+# is falling by less than this many points per hour, training ends and the
+# final checkpoint is written. Zero means run to max_tokens regardless.
+# The rate is measured against the oldest check at least a window back, so a
+# single noisy evaluation cannot end the run.
+min_improvement_per_hour = 0.0
+improvement_window_hours = 1.0
+
 dtype = "bfloat16"
 gradient_checkpointing = true
 loss_chunk = 256        # tokens per slice when comparing distributions

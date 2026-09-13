@@ -42,17 +42,25 @@ def measure(model, teacher, inputs, targets, device, chunk: int = 256) -> dict:
             gold = targets[index: index + 1].to(device)
 
             student_logits = model(ids).logits
-            teacher_logits = teacher(ids).logits
+            # Plain fine-tuning has no teacher. Perplexity is the model's own
+            # score and is measurable either way; the comparison columns are
+            # simply left out rather than the whole check being skipped.
+            teacher_logits = teacher(ids).logits if teacher is not None else None
 
             length = ids.shape[1]
             for start in range(0, length, chunk):
                 stop = min(length, start + chunk)
                 s = student_logits[:, start:stop].float()
-                t = teacher_logits[:, start:stop].float()
                 g = gold[:, start:stop]
 
                 nll += F.cross_entropy(
                     s.flatten(0, 1), g.flatten(), reduction="sum").item()
+                counted += g.numel()
+
+                if teacher_logits is None:
+                    continue
+
+                t = teacher_logits[:, start:stop].float()
                 teacher_nll += F.cross_entropy(
                     t.flatten(0, 1), g.flatten(), reduction="sum").item()
                 agree += (s.argmax(-1) == t.argmax(-1)).sum().item()
@@ -60,17 +68,21 @@ def measure(model, teacher, inputs, targets, device, chunk: int = 256) -> dict:
                 s_log = F.log_softmax(s, dim=-1)
                 t_log = F.log_softmax(t, dim=-1)
                 divergence += (t_log.exp() * (t_log - s_log)).sum().item()
-                counted += g.numel()
 
             del student_logits, teacher_logits
 
-    return {
+    scores = {
         "tokens": counted,
         "perplexity": math.exp(min(30.0, nll / max(1, counted))),
-        "teacher_perplexity": math.exp(min(30.0, teacher_nll / max(1, counted))),
-        "agreement": agree / max(1, counted),
-        "kl": divergence / max(1, counted),
     }
+    if teacher is not None:
+        scores.update({
+            "teacher_perplexity": math.exp(min(30.0,
+                                               teacher_nll / max(1, counted))),
+            "agreement": agree / max(1, counted),
+            "kl": divergence / max(1, counted),
+        })
+    return scores
 
 
 # ==============================

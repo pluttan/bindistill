@@ -26,13 +26,23 @@ DEVICE ?= $(if $(strip $(GPU)),cuda:$(strip $(GPU)))
 CUDA   ?= $(AUTO_CUDA)
 ARGS   ?=
 
+# STOP=0.2 keeps training only while held-out perplexity is falling by more
+# than 0.2 points an hour, then writes the final checkpoint and exits. Empty
+# means run the whole token budget. WINDOW sets how many hours the rate is
+# measured over, so one noisy check cannot end the run.
+STOP   ?=
+WINDOW ?=
+STOP_ARGS := $(if $(strip $(STOP)),--set train.min_improvement_per_hour=$(strip $(STOP))) \
+             $(if $(strip $(WINDOW)),--set train.improvement_window_hours=$(strip $(WINDOW)))
+
 # DATA is fineweb, dolma or text. SUBSETS names dolma domains; empty takes all.
 DATA    ?= dolma
 SUBSETS ?= ["books","c4-filtered","pes2o"]
 DATA_ARGS := --set data.kind=$(strip $(DATA)) \
              $(if $(strip $(SUBSETS)),--set 'data.subsets=$(strip $(SUBSETS))')
 FLAGS  := --preset $(CHOSEN) \
-          $(if $(strip $(DEVICE)),--set run.device=$(strip $(DEVICE))) $(ARGS)
+          $(if $(strip $(DEVICE)),--set run.device=$(strip $(DEVICE))) \
+          $(STOP_ARGS) $(ARGS)
 
 TORCH_INDEX := $(if $(strip $(CUDA)),\
                  --index-url https://download.pytorch.org/whl/$(strip $(CUDA)))

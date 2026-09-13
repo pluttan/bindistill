@@ -149,6 +149,24 @@ def cuda_unavailable_reason() -> str:
     return f"torch built for CUDA {torch.version.cuda}, no card visible"
 
 
+def improvement_per_hour(history: list[tuple[float, float]],
+                        window: float) -> float | None:
+    """Perplexity points per hour, measured against the oldest point outside
+    the window. None while there is not yet a full window to judge by.
+
+    Judging against the previous measurement instead would read noise: two
+    checks minutes apart differ by less than the run-to-run wobble.
+    """
+    if len(history) < 2:
+        return None
+    latest_at, latest = history[-1]
+    for stamp, score in history:
+        if latest_at - stamp >= window * 3600:
+            elapsed_hours = (latest_at - stamp) / 3600
+            return (score - latest) / elapsed_hours
+    return None
+
+
 def fit_micro_batch(trial, wanted: int, budget: int, device: str) -> int:
     """Largest micro-batch that survives one real step, at most `budget`.
 
@@ -284,6 +302,15 @@ def run(config, resume: bool = True) -> Path:
     save_every = int(config.get("train.checkpoint_every", 250))
     keep = int(config.get("train.keep_checkpoints", 3))
 
+    min_gain = float(config.get("train.min_improvement_per_hour", 0.0))
+    gain_window = float(config.get("train.improvement_window_hours", 1.0))
+    history: list[tuple[float, float]] = []
+    stopped_early = False
+    last_step = total_steps
+    if min_gain > 0 and not eval_every:
+        raise ValueError("train.min_improvement_per_hour needs held-out checks "
+                         "to judge by, but train.eval_every is 0")
+
     student.train()
 
     if auto_micro:
@@ -385,29 +412,61 @@ def run(config, resume: bool = True) -> Path:
                         f"{seen / 1e6:.0f}M tokens  "
                         f"{record['tokens_per_second'] / 1e3:.1f}k tok/s{extra}")
 
-        if lead and eval_every and step and step % eval_every == 0 \
-                and teacher is not None:
+        if lead and eval_every and step and step % eval_every == 0:
             score = quick_eval(config, student, teacher, device, chunk)
             # `score` carries its own "tokens" — how many were scored — which
             # used to overwrite the training counter and flatten the x axis.
             score["scored_tokens"] = score.pop("tokens", None)
-            metrics.write({"step": step, "tokens": seen, "eval": True, **score})
+            history.append((time.time(), score["perplexity"]))
+            gain = improvement_per_hour(history, gain_window)
+
+            record = {"step": step, "tokens": seen, "eval": True, **score}
+            if gain is not None:
+                record["perplexity_gain_per_hour"] = round(gain, 4)
+            metrics.write(record)
+
             ui.say()
             ui.field("held-out perplexity", f"{score['perplexity']:.2f}", "peach")
-            ui.field("agreement with teacher", f"{score['agreement']:.3f}", "peach")
+            if "agreement" in score:
+                ui.field("agreement with teacher",
+                         f"{score['agreement']:.3f}", "peach")
+            if gain is not None:
+                ui.field("gain per hour", f"{gain:+.3f} perplexity", "peach")
+
+            if min_gain > 0 and gain is not None and gain < min_gain:
+                ui.say()
+                ui.warn(f"perplexity is improving by {gain:.3f} per hour, less "
+                        f"than the {min_gain:.3f} asked for - stopping here")
+                stopped_early = True
 
         if lead and save_every and step and step % save_every == 0:
             checkpoint.save(run_dir, student, optimizer, step, seen, keep,
                             extra={"preset": config.get("preset"),
                                    "stream": stream.state()})
 
+        # Only the lead evaluates, so only the lead knows. Leaving the loop
+        # without telling the others would hang them on the next all-reduce.
+        if min_gain > 0 and eval_every and step and step % eval_every == 0:
+            if distributed:
+                import torch.distributed as dist
+
+                flag = torch.tensor([float(stopped_early)], device=device)
+                dist.broadcast(flag, src=0)
+                stopped_early = bool(flag.item())
+            if stopped_early:
+                last_step = step
+                break
+
     final = None
     if lead:
+        if stopped_early:
+            ui.field("stopped", "improvement fell below the threshold", "yellow")
         if progress is not None:
             progress.done(f"{seen / 1e9:.3f}B tokens")
-        final = checkpoint.save(run_dir, student, optimizer, total_steps, seen,
+        final = checkpoint.save(run_dir, student, optimizer, last_step, seen,
                                 keep, extra={"preset": config.get("preset"),
                                              "stream": stream.state(),
+                                             "stopped_early": stopped_early,
                                              "final": True})
         ui.good(f"final checkpoint: {final}")
 

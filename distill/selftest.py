@@ -263,6 +263,53 @@ def _no_teacher():
     assert torch.allclose(other.grad, wanted, atol=1e-6)
 
 
+@case("perplexity is measurable with no teacher")
+def _measure_alone():
+    import math
+
+    import torch
+    import torch.nn as nn
+
+    from . import evaluate
+
+    class Tiny(nn.Module):
+        """Enough of a language model for `measure`: ids in, logits out."""
+
+        def __init__(self, vocab: int):
+            super().__init__()
+            self.table = nn.Embedding(vocab, vocab)
+
+        def forward(self, ids):
+            return type("Out", (), {"logits": self.table(ids)})()
+
+    torch.manual_seed(0)
+    vocab, windows, length = 32, 2, 16
+    model = Tiny(vocab)
+    inputs = torch.randint(0, vocab, (windows, length))
+    targets = torch.randint(0, vocab, (windows, length))
+
+    alone = evaluate.measure(model, None, inputs, targets, "cpu", chunk=8)
+    assert alone["tokens"] == windows * length
+    assert math.isfinite(alone["perplexity"]) and alone["perplexity"] > 1.0
+    # Columns that need a teacher are absent, not zero: a zero would read as a
+    # real measurement in metrics.jsonl.
+    for missing in ("teacher_perplexity", "agreement", "kl"):
+        assert missing not in alone, missing
+
+    # With a teacher the same call still fills the comparison in, and the
+    # model's own perplexity does not change because of it.
+    paired = evaluate.measure(model, Tiny(vocab), inputs, targets, "cpu",
+                              chunk=8)
+    assert abs(paired["perplexity"] - alone["perplexity"]) < 1e-6
+    assert 0.0 <= paired["agreement"] <= 1.0
+    assert paired["kl"] > 0
+
+    # A model measured against itself agrees everywhere and diverges nowhere.
+    same = evaluate.measure(model, model, inputs, targets, "cpu", chunk=8)
+    assert same["agreement"] == 1.0
+    assert abs(same["kl"]) < 1e-6
+
+
 @case("dolma subsets are interleaved, unknown ones refused")
 def _dolma_subsets():
     from . import config as config_module
@@ -302,6 +349,34 @@ def _schedule():
     middle = learning_rate_factor(550, 100, 1000)
     assert 0.4 < middle < 0.7, middle
     assert learning_rate_factor(999, 100, 1000) < 0.15
+
+
+@case("improvement per hour is judged over a whole window")
+def _gain():
+    from .train import improvement_per_hour
+
+    hour = 3600.0
+    # Nothing to compare against yet, and nothing a window old yet.
+    assert improvement_per_hour([(0.0, 40.0)], 1.0) is None
+    assert improvement_per_hour([(0.0, 40.0), (600.0, 39.0)], 1.0) is None
+
+    # Two points an hour apart: four points of perplexity gained.
+    steady = [(0.0, 40.0), (hour, 36.0)]
+    assert abs(improvement_per_hour(steady, 1.0) - 4.0) < 1e-9
+
+    # A jump in the last ten minutes must not be read as an hourly rate: the
+    # oldest point outside the window is the anchor, not the previous check.
+    noisy = [(0.0, 40.0), (hour, 39.8), (hour + 600, 36.0)]
+    rate = improvement_per_hour(noisy, 1.0)
+    assert 3.0 < rate < 3.5, rate
+
+    # Perplexity going the wrong way reads as a negative rate, which is below
+    # any positive threshold, so the run stops.
+    worse = [(0.0, 36.0), (hour, 38.0)]
+    assert improvement_per_hour(worse, 1.0) < 0
+
+    # A half-hour window sees the same run sooner.
+    assert improvement_per_hour(steady, 0.5) is not None
 
 
 # ==============================
