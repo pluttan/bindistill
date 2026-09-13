@@ -25,6 +25,30 @@ DROP = ["*.pth", "*.bin", "*.h5", "*.msgpack", "*.onnx", "*consolidated*"]
 # ===  Local copy            ===
 # ==============================
 
+def use_local_cache(config) -> Path | None:
+    """Point the hub at a cache inside the project.
+
+    Must run before huggingface_hub is imported: it reads these once. An
+    HF_HOME the user set themselves is left alone - that is a deliberate
+    choice, usually a shared cache someone does not want duplicated.
+    """
+    if os.environ.get("HF_HOME"):
+        return None
+    try:
+        cache = config.path("paths.cache")
+    except Exception:  # noqa: BLE001 - an old config file has no such key
+        return None
+    cache.mkdir(parents=True, exist_ok=True)
+    if not os.access(cache, os.W_OK):
+        raise PermissionError(f"cannot write to {cache}; set HF_HOME to a "
+                              f"directory you own")
+    os.environ["HF_HOME"] = str(cache)
+    # Older releases read these instead; setting them costs nothing.
+    os.environ.setdefault("HF_HUB_CACHE", str(cache / "hub"))
+    os.environ.setdefault("TRANSFORMERS_CACHE", str(cache / "hub"))
+    return cache
+
+
 def local_dir(config) -> Path:
     name = str(config.require("model.teacher")).replace("/", "_")
     return config.path("paths.models") / name

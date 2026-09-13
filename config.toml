@@ -16,6 +16,11 @@ seed = 0
 models = "assets/models"   # local snapshot of teacher weights and tokeniser
 corpus = "assets/corpus"   # tokenised training text
 runs = "runs"
+# The hub's own cache, kept inside the project rather than in ~/.cache: a home
+# directory that belongs to someone else is unwritable, and a download that
+# cannot take its lock file waits instead of failing, which looks like a hang.
+# Setting HF_HOME yourself still wins.
+cache = "assets/cache"
 
 [model]
 teacher = "Qwen/Qwen3-0.6B"

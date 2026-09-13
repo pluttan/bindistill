@@ -558,6 +558,51 @@ def _checkpoint():
         assert torch.allclose(layer.master, wanted)
 
 
+@case("the hub cache lives inside the project")
+def _cache_location():
+    """A home directory owned by someone else cannot hold a lock file, and a
+    download that cannot take its lock waits rather than failing.
+    """
+    import os
+
+    from . import config as config_module
+    from . import models
+
+    with tempfile.TemporaryDirectory() as folder:
+        root = Path(folder)
+        (root / "config.toml").write_text(
+            '[paths]\ncache = "assets/cache"\nmodels = "assets/models"\n'
+            'corpus = "assets/corpus"\nruns = "runs"\n'
+            '[model]\nteacher = "x/y"\n')
+        config = config_module.load(root / "config.toml", None, [])
+
+        keep = {name: os.environ.get(name)
+                for name in ("HF_HOME", "HF_HUB_CACHE", "TRANSFORMERS_CACHE")}
+        try:
+            for name in keep:
+                os.environ.pop(name, None)
+            chosen = models.use_local_cache(config)
+            assert chosen is not None
+            assert chosen.is_dir(), chosen
+            # Relative paths resolve against the project, not against wherever
+            # the config file happens to sit, so the cache travels with the
+            # folder - the point of the whole arrangement.
+            project = Path(__file__).resolve().parent.parent
+            assert project in chosen.parents, chosen
+            assert os.environ["HF_HOME"] == str(chosen)
+
+            # An HF_HOME the user set is a deliberate choice; leave it alone.
+            os.environ["HF_HOME"] = "/somewhere/of/my/own"
+            assert models.use_local_cache(config) is None
+            assert os.environ["HF_HOME"] == "/somewhere/of/my/own"
+        finally:
+            for name, value in keep.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
+
 @case("a dropped connection resumes instead of ending the fetch")
 def _shard_retry():
     """Reading hundreds of gigabytes, a read will time out sooner or later.

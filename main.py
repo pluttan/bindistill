@@ -211,6 +211,16 @@ def main(argv: list[str] | None = None) -> int:
         ui.fail(str(problem))
         return 1
 
+    # Before anything imports huggingface_hub: it reads the cache location
+    # once, at import time.
+    from distill import models
+
+    try:
+        models.use_local_cache(config)
+    except PermissionError as problem:
+        ui.fail(str(problem))
+        return 1
+
     if args.command == "status":
         return command_status(config)
     if args.command == "fetch":
