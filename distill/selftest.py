@@ -388,22 +388,22 @@ def _gain():
 
 @case("a lone slow check does not end the run")
 def _patience():
-    """The streak rule the loop applies, on the numbers it applies it to.
-
-    Checks scatter by more than a low threshold is worth, so one reading below
-    it has to be survivable; two in a row has to stop.
+    """The streak rule as the loop applies it, not a copy of it: these are the
+    two functions train.run() calls.
     """
+    from .train import slow_streak_after, streak_is_enough
+
     threshold, patience = 0.05, 2
 
-    def stops_at(rates):
+    def stops_at(gains, keep=patience):
         streak = 0
-        for i, r in enumerate(rates):
-            streak = streak + 1 if r < threshold else 0
-            if streak >= patience:
+        for i, gain in enumerate(gains):
+            streak = slow_streak_after(streak, gain, threshold)
+            if streak_is_enough(streak, keep):
                 return i
         return None
 
-    # A real run's tail, with one unlucky measurement in the middle of it.
+    # A real run's tail with one unlucky measurement in the middle of it.
     assert stops_at([0.4, 0.5, 0.01, 0.45, 0.3]) is None
     # Genuinely flat: two in a row, and it ends on the second.
     assert stops_at([0.4, 0.3, 0.02, 0.01, 0.3]) == 3
@@ -412,10 +412,17 @@ def _patience():
     # Nothing below the threshold, nothing happens.
     assert stops_at([0.4, 0.3, 0.06, 0.51]) is None
 
+    # Too early for a rate: the streak is neither advanced nor broken.
+    assert slow_streak_after(1, None, threshold) == 1
+    assert stops_at([0.01, None, 0.01]) == 2
 
-# ==============================
-# ===  Plumbing              ===
-# ==============================
+    # Patience below one would otherwise make an empty streak sufficient and
+    # end a healthy run at its first check.
+    assert not streak_is_enough(0, 0)
+    assert not streak_is_enough(0, -3)
+    assert stops_at([0.4, 0.5, 0.6], keep=0) is None
+    assert stops_at([0.01], keep=0) == 0
+
 
 @case("each process of a multi-card run takes its own card")
 def _rank_device():
@@ -462,10 +469,22 @@ def _unbound():
             yield node
             stack.extend(ast.iter_child_nodes(node))
 
-    root = Path(__file__).resolve().parent.parent
+    # Our own sources only. rglob from the project root would walk venv/ as
+    # well: .gitignore keeps it out of git, not out of a directory walk, and
+    # the standard library alone trips this heuristic fifteen times over
+    # `except ... as exc` and `while True`, so `make all` would fail at the
+    # selftest step on every machine that has actually installed the venv.
+    root = Path(__file__).resolve().parent
+    files = sorted(root.glob("*.py")) + [root.parent / "main.py"]
     problems = []
-    for path in sorted(root.rglob("*.py")):
-        tree = ast.parse(path.read_text(), str(path))
+    for path in files:
+        if not path.exists():
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+        except (SyntaxError, UnicodeDecodeError) as problem:
+            problems.append(f"{path.name}: cannot be parsed ({problem})")
+            continue
         for fn in ast.walk(tree):
             if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue

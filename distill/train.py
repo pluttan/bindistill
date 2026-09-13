@@ -199,6 +199,27 @@ def improvement_per_hour(history: list[tuple[float, float]],
     return None
 
 
+def slow_streak_after(streak: int, gain: float | None,
+                      threshold: float) -> int:
+    """How many checks in a row have come in under the threshold.
+
+    A check with no rate yet (too early to have a window) leaves the count
+    alone rather than breaking a streak that is already running.
+    """
+    if gain is None:
+        return streak
+    return streak + 1 if gain < threshold else 0
+
+
+def streak_is_enough(streak: int, patience: int) -> bool:
+    """Whether a run of slow checks is long enough to stop on.
+
+    `patience` below one is treated as one: zero would make an empty streak
+    sufficient and end the run at its first evaluation, while still climbing.
+    """
+    return streak > 0 and streak >= max(1, patience)
+
+
 def fit_micro_batch(trial, wanted: int, budget: int, device: str) -> int:
     """Largest micro-batch that survives one real step, at most `budget`.
 
@@ -268,6 +289,15 @@ def run(config, resume: bool = True) -> Path:
         raise ValueError(f"train.objective must be distill or language, "
                          f"got '{objective}'")
 
+    # These fallbacks are the values in config.toml: a config file that
+    # predates the setting must behave the way the documentation describes.
+    min_gain = float(config.get("train.min_improvement_per_hour", 0.05))
+    gain_window = float(config.get("train.improvement_window_hours", 3.0))
+    gain_patience = max(1, int(config.get("train.stop_patience", 2)))
+    if min_gain > 0 and gain_window <= 0:
+        raise ValueError("train.improvement_window_hours must be above zero; "
+                         f"got {gain_window}")
+
     run_dir = config.run_dir()
     if lead:
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -313,12 +343,22 @@ def run(config, resume: bool = True) -> Path:
         meta = checkpoint.read_meta(existing)
         seen = int(meta.get("tokens") or stored_step * per_step)
         start_step = seen // per_step
+        if lead and meta.get("extra", {}).get("stopped_early"):
+            # Continuing one of these is not wrong - more tokens still help -
+            # but it costs a window plus the patience checks to reach the same
+            # verdict, and the user should know that is what they are buying.
+            ui.warn("the previous run stopped itself: perplexity was falling "
+                    "slower than train.min_improvement_per_hour")
+            ui.say("      it will train at least "
+                   f"{gain_window * (gain_patience + 1):.0f}h before it can "
+                   "decide again; STOP=0 trains the whole budget instead",
+                   "overlay")
         if lead:
-            ui.good(f"resumed from {existing.name}: {seen / 1e6:.0f}M tokens "
+            ui.good(f"resumed from {existing.name}: {token_count(seen)} tokens "
                     f"already seen, continuing at step {start_step}")
             if seen >= budget_tokens:
-                ui.warn(f"train.max_tokens is {budget_tokens / 1e6:.0f}M and "
-                        f"{seen / 1e6:.0f}M are done — raise it to train further")
+                ui.warn(f"train.max_tokens is {token_count(budget_tokens)} and "
+                        f"{token_count(seen)} are done — raise it to train further")
 
     trainable = student
     if distributed:
@@ -339,18 +379,20 @@ def run(config, resume: bool = True) -> Path:
     save_every = int(config.get("train.checkpoint_every", 250))
     keep = int(config.get("train.keep_checkpoints", 3))
 
-    min_gain = float(config.get("train.min_improvement_per_hour", 0.0))
-    gain_window = float(config.get("train.improvement_window_hours", 3.0))
-    gain_patience = int(config.get("train.stop_patience", 2))
     history: list[tuple[float, float]] = []
     slow_streak = 0
     stopped_early = False
     last_step = total_steps
     if min_gain > 0 and not eval_every:
-        # This is on by default, so a run with the checks switched off should
-        # carry on to max_tokens rather than refuse to start.
-        ui.warn("train.eval_every is 0, so there is nothing to judge progress "
-                "by - training will run to train.max_tokens")
+        # Asked for on the command line: refuse, rather than quietly spend the
+        # whole budget the user wanted cut short. Left at its default: warn and
+        # carry on, since a run should not fail over a setting nobody typed.
+        if config.was_set("train.min_improvement_per_hour"):
+            raise ValueError("train.min_improvement_per_hour needs held-out "
+                             "checks to judge by, but train.eval_every is 0")
+        if lead:
+            ui.warn("train.eval_every is 0, so there is nothing to judge "
+                    "progress by - training will run to train.max_tokens")
         min_gain = 0.0
 
     student.train()
@@ -388,7 +430,9 @@ def run(config, resume: bool = True) -> Path:
     # float32, and a float32 matmul on a GPU is both slower and larger than it
     # needs to be. On cpu and mps the cast buys nothing and costs correctness.
     autocast_on = kind == "cuda" and dtype is not torch.float32
-    started = time.time()
+    # Monotonic, not wall clock: an NTP step or a suspended machine would
+    # otherwise inflate the denominator and read as a stalled run.
+    started = time.monotonic()
     marker = (started, seen)
     progress = ui.Progress("training", total_steps) if lead else None
 
@@ -433,7 +477,7 @@ def run(config, resume: bool = True) -> Path:
             ce_total = float(ce_total)
 
         if reporting:
-            now = time.time()
+            now = time.monotonic()
             rate = (seen - marker[1]) / max(1e-6, now - marker[0])
             marker = (now, seen)
             record = {"step": step, "tokens": seen, "kl": kl_total,
@@ -451,7 +495,7 @@ def run(config, resume: bool = True) -> Path:
                 extra = f"  {record['gpu_gb']:.1f} GB" if "gpu_gb" in record else ""
                 ui.step(f"step {step:>6}  kl {kl_total:7.4f}  "
                         f"ce {ce_total:6.3f}  ppl {record['ppl']:9.2f}  "
-                        f"{seen / 1e6:.0f}M tokens  "
+                        f"{token_count(seen)} tokens  "
                         f"{record['tokens_per_second'] / 1e3:.1f}k tok/s{extra}")
 
         if lead and eval_every and step and step % eval_every == 0:
@@ -459,11 +503,12 @@ def run(config, resume: bool = True) -> Path:
             # `score` carries its own "tokens" — how many were scored — which
             # used to overwrite the training counter and flatten the x axis.
             score["scored_tokens"] = score.pop("tokens", None)
-            history.append((time.time(), score["perplexity"]))
+            history.append((time.monotonic(), score["perplexity"]))
             gain = improvement_per_hour(history, gain_window)
 
             record = {"step": step, "tokens": seen, "eval": True,
-                      "elapsed": round(time.time() - started, 1), **score}
+                      "elapsed": round(time.monotonic() - started, 1),
+                      **score}
             if gain is not None:
                 record["perplexity_gain_per_hour"] = round(gain, 4)
             metrics.write(record)
@@ -476,13 +521,13 @@ def run(config, resume: bool = True) -> Path:
             if gain is not None:
                 ui.field("gain per hour", f"{gain:+.3f} perplexity", "peach")
 
-            if min_gain > 0 and gain is not None:
-                slow_streak = slow_streak + 1 if gain < min_gain else 0
+            if min_gain > 0:
+                slow_streak = slow_streak_after(slow_streak, gain, min_gain)
                 if 0 < slow_streak < gain_patience:
                     ui.field("below the threshold",
                              f"{slow_streak} of {gain_patience} checks",
                              "yellow")
-                if slow_streak >= gain_patience:
+                if streak_is_enough(slow_streak, gain_patience):
                     ui.say()
                     ui.warn(f"perplexity is improving by {gain:.3f} per hour, "
                             f"less than the {min_gain:.3f} asked for, "

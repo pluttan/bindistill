@@ -3,6 +3,7 @@
 DETECTED    := $(shell sh scripts/detect.sh 2>/dev/null)
 AUTO_CUDA   := $(patsubst TORCH_CUDA=%,%,$(filter TORCH_CUDA=%,$(DETECTED)))
 AUTO_PRESET := $(patsubst PRESET=%,%,$(filter PRESET=%,$(DETECTED)))
+AUTO_GPUS   := $(patsubst GPU_COUNT=%,%,$(filter GPU_COUNT=%,$(DETECTED)))
 
 VENV   := venv
 # The environment is built with python3.12, but the interpreter inside it is
@@ -31,20 +32,34 @@ MANY := $(word 2,$(GPU_LIST))
 # takes cuda:0, cuda:1 ... of what it can see - so run.device must stay unset.
 DEVICE ?= $(if $(MANY),,$(if $(strip $(GPU)),cuda:$(strip $(GPU))))
 VISIBLE := $(if $(MANY),CUDA_VISIBLE_DEVICES=$(strip $(GPU)))
-# How many processes train-multi starts: taken from the list when there is
-# one, so the count and the cards can never disagree.
+# How many processes to train with. A list of cards decides it; GPUS=all takes
+# every card the machine has; otherwise one.
 GPUS   ?= $(if $(MANY),$(words $(GPU_LIST)),1)
+# "0" is what detect prints on a machine with no card, and it is not empty, so
+# it has to be filtered out or torchrun is asked for zero processes.
+COUNTED := $(strip $(filter-out 0,$(AUTO_GPUS)))
+WANTED := $(strip $(if $(filter all,$(strip $(GPUS))),$(if $(COUNTED),$(COUNTED),1),$(GPUS)))
+# More than one process means torchrun, and that is the only difference: every
+# target below launches the same way, so `make all GPUS=2` needs nothing else.
+# --standalone: one machine, rendezvous on localhost and a free port. Without
+# it torchrun resolves the host name, which on some machines points outward
+# and leaves the processes unable to reach each other.
+LAUNCH := $(if $(filter-out 1,$(WANTED)),\
+            $(VENV)/bin/torchrun --standalone --nproc_per_node=$(WANTED),$(PY))
 CUDA   ?= $(AUTO_CUDA)
 ARGS   ?=
 
-# STOP=0.2 keeps training only while held-out perplexity is falling by more
-# than 0.2 points an hour, then writes the final checkpoint and exits. Empty
-# means run the whole token budget. WINDOW sets how many hours the rate is
-# measured over, so one noisy check cannot end the run.
-STOP   ?=
-WINDOW ?=
+# Training stops once held-out perplexity is falling slower than STOP points
+# an hour. Left empty it is 0.05, the value in config.toml - not the whole
+# token budget, so STOP=0 is how a run is made to use all of it. WINDOW is how
+# many hours the rate is measured over and PATIENCE how many checks in a row
+# must be slow, so one noisy measurement cannot end a run.
+STOP     ?=
+WINDOW   ?=
+PATIENCE ?=
 STOP_ARGS := $(if $(strip $(STOP)),--set train.min_improvement_per_hour=$(strip $(STOP))) \
-             $(if $(strip $(WINDOW)),--set train.improvement_window_hours=$(strip $(WINDOW)))
+             $(if $(strip $(WINDOW)),--set train.improvement_window_hours=$(strip $(WINDOW))) \
+             $(if $(strip $(PATIENCE)),--set train.stop_patience=$(strip $(PATIENCE)))
 
 # DATA is fineweb, dolma or text. SUBSETS names dolma domains; empty takes all.
 DATA    ?= dolma
@@ -107,7 +122,8 @@ fetch:
 	$(PY) main.py fetch $(FLAGS) $(DATA_ARGS)
 
 train:
-	PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True $(PY) main.py train $(FLAGS) $(DATA_ARGS)
+	$(VISIBLE) PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+	$(LAUNCH) main.py train $(FLAGS) $(DATA_ARGS)
 
 # Same as train; it always continues from the newest checkpoint.
 resume: train
@@ -129,11 +145,9 @@ smoke:
 	$(PY) main.py train --preset smoke
 	$(PY) main.py eval --preset smoke
 
-# Several cards on one machine.
-train-multi:
-	$(VISIBLE) PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-	$(VENV)/bin/torchrun --nproc_per_node=$(GPUS) main.py train \
-	    $(FLAGS) $(DATA_ARGS)
+# Kept as a name people already type; `train` does the same thing when it is
+# given more than one card, including inside `make all`.
+train-multi: train
 
 # Prove the folder works with the network unplugged.
 offline:

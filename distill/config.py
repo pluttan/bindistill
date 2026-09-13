@@ -69,6 +69,14 @@ class Config:
     def __init__(self, data: dict, source: Path):
         self.data = data
         self.source = source
+        # Which keys came from --set rather than from the file. A setting the
+        # user typed out is a different thing from a default, and refusing to
+        # honour it should be an error where ignoring a default is not.
+        self.overridden: set[str] = set()
+
+    def was_set(self, path: str) -> bool:
+        """True when this key was given on the command line."""
+        return path in self.overridden
 
     # --- reading ---
 
@@ -137,6 +145,7 @@ def load(path: str | os.PathLike | None = None,
             raise ValueError(f"--set expects key=value, got '{item}'")
         key, value = item.split("=", 1)
         config.set(key.strip(), _coerce(value))
+        config.overridden.add(key.strip())
     return config
 
 

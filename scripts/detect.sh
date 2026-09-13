@@ -12,6 +12,7 @@ set -eu
 
 GPU_NAME=""
 GPU_MB=0
+GPU_COUNT=0
 DRIVER_CUDA=""
 TORCH_CUDA=""
 PRESET="smoke"
@@ -20,9 +21,12 @@ if command -v nvidia-smi >/dev/null 2>&1; then
     GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || true)
     GPU_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 || echo 0)
     DRIVER_CUDA=$(nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: *\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -1 || true)
+    # How many cards, so GPUS=all does not have to be counted by hand.
+    GPU_COUNT=$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | wc -l | tr -d ' ' || echo 0)
 fi
 
 [ -z "${GPU_MB:-}" ] && GPU_MB=0
+[ -z "${GPU_COUNT:-}" ] && GPU_COUNT=0
 
 # The wheel must not ask for more CUDA than the driver provides.
 case "$DRIVER_CUDA" in
@@ -54,6 +58,7 @@ if [ "${1:-}" = "--report" ]; then
                     "$(echo "$total" | tr -d ' ')" \
                     "$(echo "$idx" | tr -d ' ')"
             done
+        printf 'cards         %s   (GPUS=all uses them all)\n' "$GPU_COUNT"
         printf 'driver CUDA   %s\n' "${DRIVER_CUDA:-unknown}"
         printf 'torch build   %s\n' "${TORCH_CUDA:-default}"
         printf 'preset by card %s   (used only with PRESET=auto)\n' "$PRESET"
@@ -66,5 +71,6 @@ if [ "${1:-}" = "--report" ]; then
 fi
 
 printf 'GPU_MB=%s\n' "$GPU_MB"
+printf 'GPU_COUNT=%s\n' "$GPU_COUNT"
 printf 'TORCH_CUDA=%s\n' "$TORCH_CUDA"
 printf 'PRESET=%s\n' "$PRESET"

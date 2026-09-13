@@ -53,8 +53,8 @@ max_tokens = 3.0e8      # stop here; a checkpoint is written first
 # 0.05 is a backstop rather than a dial - replayed against a real 300M-token
 # run it never fires, because that run never fell slower than 0.25 an hour.
 # It ends the runs that have genuinely flattened out, and leaves the rest to
-# max_tokens. Raise it to 0.3 to cut the tail short: same run, two hours less,
-# two tenths of a perplexity point given up.
+# max_tokens. Raise it to cut the tail short instead; the README has the
+# replayed numbers for each value.
 min_improvement_per_hour = 0.05
 
 # How many hours the rate is measured over. Three, not one: replaying the same
