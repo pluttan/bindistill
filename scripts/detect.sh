@@ -43,14 +43,25 @@ fi
 
 if [ "${1:-}" = "--report" ]; then
     if [ "$GPU_MB" -gt 0 ]; then
-        printf 'card          %s, %s MB\n' "${GPU_NAME:-unknown}" "$GPU_MB"
+        # Every card with its index, so there is something to choose from.
+        nvidia-smi --query-gpu=index,name,memory.free,memory.total \
+            --format=csv,noheader,nounits 2>/dev/null |
+            while IFS=, read -r idx name free total; do
+                printf 'gpu %s       %s, %s of %s MB free   (GPU=%s)\n' \
+                    "$(echo "$idx" | tr -d ' ')" \
+                    "$(echo "$name" | sed 's/^ *//')" \
+                    "$(echo "$free" | tr -d ' ')" \
+                    "$(echo "$total" | tr -d ' ')" \
+                    "$(echo "$idx" | tr -d ' ')"
+            done
         printf 'driver CUDA   %s\n' "${DRIVER_CUDA:-unknown}"
         printf 'torch build   %s\n' "${TORCH_CUDA:-default}"
+        printf 'preset by card %s   (used only with PRESET=auto)\n' "$PRESET"
     else
         printf 'card          none found (nvidia-smi absent or no device)\n'
         printf 'torch build   default (processor)\n'
+        printf 'preset by card %s   (used only with PRESET=auto)\n' "$PRESET"
     fi
-    printf 'preset        %s\n' "$PRESET"
     exit 0
 fi
 

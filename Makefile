@@ -11,13 +11,18 @@ VENV   := venv
 PY     := $(VENV)/bin/python
 PIP    := $(VENV)/bin/pip
 
-PRESET ?= $(if $(AUTO_PRESET),$(AUTO_PRESET),small)
+# small by default; PRESET=auto sizes it from the card's memory instead.
+PRESET ?= small
+AUTO_OR_SMALL := $(if $(AUTO_PRESET),$(AUTO_PRESET),small)
+CHOSEN := $(if $(filter auto,$(strip $(PRESET))),$(AUTO_OR_SMALL),$(strip $(PRESET)))
 GPUS   ?= 1
-# DEVICE=cuda:1 picks a card; CUDA=cu121 forces a torch build.
+# GPU=1 picks the second card, DEVICE=cuda:1 is the long form of the same.
+# CUDA=cu121 forces a torch build. `make detect` lists the cards and indices.
 # Trailing comments are kept off these lines on purpose: make would take the
 # spaces before the "#" as part of the value, and an "empty" variable holding a
 # space is treated as set.
-DEVICE ?=
+GPU    ?=
+DEVICE ?= $(if $(strip $(GPU)),cuda:$(strip $(GPU)))
 CUDA   ?= $(AUTO_CUDA)
 ARGS   ?=
 
@@ -26,7 +31,8 @@ DATA    ?= dolma
 SUBSETS ?= ["books","c4-filtered","pes2o"]
 DATA_ARGS := --set data.kind=$(strip $(DATA)) \
              $(if $(strip $(SUBSETS)),--set 'data.subsets=$(strip $(SUBSETS))')
-FLAGS  := --preset $(PRESET) $(if $(DEVICE),--set run.device=$(DEVICE)) $(ARGS)
+FLAGS  := --preset $(CHOSEN) \
+          $(if $(strip $(DEVICE)),--set run.device=$(strip $(DEVICE))) $(ARGS)
 
 TORCH_INDEX := $(if $(strip $(CUDA)),\
                  --index-url https://download.pytorch.org/whl/$(strip $(CUDA)))
