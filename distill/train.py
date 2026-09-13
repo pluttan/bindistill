@@ -283,7 +283,10 @@ def run(config, resume: bool = True) -> Path:
 
         if lead and eval_every and step and step % eval_every == 0:
             score = quick_eval(config, student, teacher, device, chunk)
-            metrics.write({"step": step, "tokens": seen, **score})
+            # `score` carries its own "tokens" — how many were scored — which
+            # used to overwrite the training counter and flatten the x axis.
+            score["scored_tokens"] = score.pop("tokens", None)
+            metrics.write({"step": step, "tokens": seen, "eval": True, **score})
             ui.say()
             ui.field("held-out perplexity", f"{score['perplexity']:.2f}", "peach")
             ui.field("agreement with teacher", f"{score['agreement']:.3f}", "peach")
