@@ -243,12 +243,21 @@ def open_corpus(config) -> np.memmap:
         raise FileNotFoundError(
             f"no corpus at {array_path} — run `make fetch` on a machine with "
             f"network access first")
+    tokens = np.load(array_path, mmap_mode="r")
     if note_path.exists():
         note = json.loads(note_path.read_text())
-        if note.get("written", 0) < note.get("target", 0):
-            ui.warn(f"corpus is only {note['written'] / 1e6:.1f}M of "
-                    f"{note['target'] / 1e6:.1f}M tokens")
-    return np.load(array_path, mmap_mode="r")
+        written = int(note.get("written", 0))
+        if 0 < written < note.get("target", 0):
+            ui.warn(f"corpus is only {written / 1e6:.1f}M of "
+                    f"{note['target'] / 1e6:.1f}M tokens; run `make fetch` "
+                    f"again to finish it")
+            # Hand back only what was actually written. The file is created at
+            # its full length up front, so the tail is zeros: training would
+            # sample them as text, and the held-out set - taken from the very
+            # end of the corpus - would be nothing else, making perplexity and
+            # every decision based on it meaningless.
+            tokens = tokens[:written]
+    return tokens
 
 
 # ==============================

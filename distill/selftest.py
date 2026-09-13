@@ -558,6 +558,40 @@ def _checkpoint():
         assert torch.allclose(layer.master, wanted)
 
 
+@case("an unfinished corpus hands back only what was written")
+def _partial_corpus():
+    """The file is created at full length up front, so an interrupted fetch
+    leaves zeros at the end - exactly where the held-out set is taken from.
+    """
+    import json
+
+    import numpy as np
+
+    from . import data
+
+    with tempfile.TemporaryDirectory() as folder:
+        root = Path(folder)
+        written, target = 4000, 10000
+        array = np.zeros(target, dtype=np.uint16)
+        array[:written] = np.arange(1, written + 1, dtype=np.uint16)
+        array_path = root / "corpus.npy"
+        np.save(array_path, array)
+        (root / "corpus.json").write_text(json.dumps(
+            {"written": written, "target": target, "shard": 0, "row": 0}))
+
+        original = data.corpus_files
+        data.corpus_files = lambda config: (array_path, root / "corpus.json")
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                tokens = data.open_corpus(None)
+        finally:
+            data.corpus_files = original
+
+        assert len(tokens) == written, len(tokens)
+        # Nothing from the unwritten tail, so no window of zeros can be drawn.
+        assert int(np.asarray(tokens).min()) > 0
+
+
 @case("held-out text is never drawn for training")
 def _split():
     import numpy as np
