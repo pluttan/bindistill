@@ -166,6 +166,17 @@ def cuda_unavailable_reason() -> str:
     return f"torch built for CUDA {torch.version.cuda}, no card visible"
 
 
+def token_count(tokens: float) -> str:
+    """Billions once there are billions, millions before that: a smoke run
+    reporting "0.000B tokens" reads as though it trained on nothing.
+    """
+    if tokens >= 1e9:
+        return f"{tokens / 1e9:.3f}B"
+    if tokens >= 1e6:
+        return f"{tokens / 1e6:.1f}M"
+    return f"{tokens / 1e3:.0f}k"
+
+
 def improvement_per_hour(history: list[tuple[float, float]],
                         window: float) -> float | None:
     """Perplexity points per hour over the last `window` hours. None while
@@ -266,7 +277,7 @@ def run(config, resume: bool = True) -> Path:
         ui.field("objective", objective)
         ui.field("teacher" if objective == "distill" else "model",
                  config.require("model.teacher"))
-        ui.field("token budget", f"{budget_tokens / 1e9:.3f}B")
+        ui.field("token budget", token_count(budget_tokens))
         ui.field("run directory", run_dir)
 
     if lead and kind == "cpu":
@@ -501,7 +512,7 @@ def run(config, resume: bool = True) -> Path:
         if stopped_early:
             ui.field("stopped", "improvement fell below the threshold", "yellow")
         if progress is not None:
-            progress.done(f"{seen / 1e9:.3f}B tokens")
+            progress.done(f"{token_count(seen)} tokens")
         final = checkpoint.save(run_dir, student, optimizer, last_step, seen,
                                 keep, extra={"preset": config.get("preset"),
                                              "stream": stream.state(),
