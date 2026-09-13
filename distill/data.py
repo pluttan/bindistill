@@ -12,12 +12,19 @@ numbers at the end mean anything.
 
 from __future__ import annotations
 
+import http.client
 import json
+import time
 from pathlib import Path
 
 import numpy as np
 
 from . import ui
+
+# A dropped connection is not an error here, it is the weather. Reading
+# hundreds of gigabytes over https, a read will time out sooner or later, and
+# the whole fetch used to die with it.
+NETWORK_TROUBLE = (OSError, EOFError, http.client.HTTPException)
 
 
 # ==============================
@@ -90,8 +97,20 @@ def _dolma_urls(config) -> list[str]:
         listing = (f"https://huggingface.co/datasets/allenai/dolma/raw/main/"
                    f"urls/{version}.txt")
         ui.step(f"fetching the {version} file list")
-        with urllib.request.urlopen(listing, timeout=60) as response:
-            cache.write_bytes(response.read())
+        attempts = max(1, int(config.get("data.retries", 5)))
+        for attempt in range(1, attempts + 1):
+            try:
+                with urllib.request.urlopen(listing, timeout=60) as response:
+                    cache.write_bytes(response.read())
+                break
+            except NETWORK_TROUBLE as problem:
+                if attempt == attempts:
+                    raise
+                # The list is one small file, but the fetch that needs it may
+                # be days long: failing here would waste the whole attempt.
+                delay = min(60.0, 5.0 * 2 ** (attempt - 1))
+                ui.warn(f"{problem} — retrying the file list in {delay:.0f}s")
+                time.sleep(delay)
 
     urls = [line.strip() for line in cache.read_text().splitlines()
             if line.strip().startswith("http")]
@@ -114,41 +133,83 @@ def _dolma_urls(config) -> list[str]:
     return urls
 
 
-def _dolma_documents(config, start_shard: int, skip: int):
-    """Stream the gzipped json lines; nothing is kept on disk."""
+def _shard_lines(url: str, timeout: float):
+    """The decompressed lines of one remote file."""
     import gzip
-    import json as json_module
     import urllib.request
 
+    request = urllib.request.Request(url, headers={"User-Agent": "bindistill"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        with gzip.GzipFile(fileobj=response) as stream:
+            yield from stream
+
+
+def _shard_batches(open_lines, url: str, skip: int, attempts: int,
+                   pause, batch_size: int = 256):
+    """Batches of texts from one file, re-opening it when the read breaks.
+
+    `skip` counts lines already handed out, so a retry resumes where the
+    previous attempt stopped instead of repeating documents. Re-reading the
+    skipped part costs bandwidth, which is the price of not restarting the
+    whole fetch. When the attempts run out the file is given up on: one
+    unreachable shard out of hundreds should not end the run.
+    """
+    import json as json_module
+
+    done = skip
+    for attempt in range(1, attempts + 1):
+        batch, seen = [], 0
+        try:
+            for line in open_lines(url):
+                seen += 1
+                if seen <= done:
+                    continue
+                try:
+                    text = json_module.loads(line).get("text")
+                except (ValueError, UnicodeDecodeError):
+                    continue
+                if not text:
+                    continue
+                batch.append(text)
+                if len(batch) >= batch_size:
+                    done = seen
+                    yield seen, batch
+                    batch = []
+            if batch:
+                done = seen
+                yield seen, batch
+            return
+        except NETWORK_TROUBLE as problem:
+            if batch:
+                done = seen
+                yield seen, batch
+            if attempt == attempts:
+                ui.warn(f"giving up on {url.split('/')[-1]} after {attempts} "
+                        f"tries ({problem}); moving to the next file")
+                return
+            delay = min(60.0, 5.0 * 2 ** (attempt - 1))
+            ui.warn(f"{problem} — retrying in {delay:.0f}s "
+                    f"({attempt} of {attempts})")
+            pause(delay)
+
+
+def _dolma_documents(config, start_shard: int, skip: int):
+    """Stream the gzipped json lines; nothing is kept on disk."""
     urls = _dolma_urls(config)
     if not urls:
         raise ValueError("the dolma file list came back empty")
+
+    timeout = float(config.get("data.timeout", 120))
+    attempts = max(1, int(config.get("data.retries", 5)))
 
     index = start_shard
     while index < len(urls):
         url = urls[index]
         ui.step(f"streaming {url.split('/')[-2]}/{url.split('/')[-1]}")
-        request = urllib.request.Request(
-            url, headers={"User-Agent": "bindistill"})
-        with urllib.request.urlopen(request, timeout=120) as response:
-            with gzip.GzipFile(fileobj=response) as stream:
-                batch, seen = [], 0
-                for line in stream:
-                    seen += 1
-                    if seen <= skip:
-                        continue
-                    try:
-                        text = json_module.loads(line).get("text")
-                    except (ValueError, UnicodeDecodeError):
-                        continue
-                    if not text:
-                        continue
-                    batch.append(text)
-                    if len(batch) >= 256:
-                        yield index, seen, batch
-                        batch = []
-                if batch:
-                    yield index, seen, batch
+        for seen, batch in _shard_batches(
+                lambda u: _shard_lines(u, timeout), url, skip, attempts,
+                time.sleep):
+            yield index, seen, batch
         index += 1
         skip = 0
 

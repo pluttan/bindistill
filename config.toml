@@ -34,6 +34,13 @@ text_file = ""          # used when kind = "text"
 train_tokens = 100_000_000
 eval_tokens = 1_000_000
 
+# Reading a corpus over https takes as long as it takes, and a socket will
+# time out somewhere in the middle of it. A shard that breaks is re-opened and
+# resumed from the line after the last one handed out; after this many failed
+# attempts that one file is skipped rather than the whole fetch abandoned.
+retries = 5
+timeout = 120
+
 [train]
 objective = "distill"   # distill = match a teacher; language = next token only
 seq = 1024

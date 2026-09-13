@@ -558,6 +558,54 @@ def _checkpoint():
         assert torch.allclose(layer.master, wanted)
 
 
+@case("a dropped connection resumes instead of ending the fetch")
+def _shard_retry():
+    """Reading hundreds of gigabytes, a read will time out sooner or later.
+    The fetch has to survive it without losing or repeating documents.
+    """
+    import json
+
+    from . import data
+
+    lines = [json.dumps({"text": f"document {i}"}).encode() for i in range(10)]
+    slept = []
+
+    def breaks_once(_url, state={"tries": 0}):
+        state["tries"] += 1
+        for i, line in enumerate(lines):
+            # First attempt dies halfway, as a timed-out socket would.
+            if state["tries"] == 1 and i == 6:
+                raise TimeoutError("the read operation timed out")
+            yield line
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        got = list(data._shard_batches(breaks_once, "u/f.gz", 0, 5,
+                                       slept.append, batch_size=2))
+
+    texts = [t for _, batch in got for t in batch]
+    assert texts == [f"document {i}" for i in range(10)], texts
+    assert slept, "a retry should wait before reconnecting"
+
+    # Every attempt failing gives up on this file rather than the whole run.
+    def always_breaks(_url):
+        raise TimeoutError("down")
+        yield  # pragma: no cover - generator marker
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert list(data._shard_batches(always_breaks, "u/f.gz", 0, 3,
+                                        slept.append)) == []
+
+    # Resuming a shard skips what was already handed out.
+    def clean(_url):
+        yield from lines
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        rest = list(data._shard_batches(clean, "u/f.gz", 7, 3, slept.append,
+                                        batch_size=2))
+    assert [t for _, b in rest for t in b] == ["document 7", "document 8",
+                                               "document 9"]
+
+
 @case("an unfinished corpus hands back only what was written")
 def _partial_corpus():
     """The file is created at full length up front, so an interrupted fetch
