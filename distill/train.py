@@ -251,10 +251,19 @@ def run(config, resume: bool = True) -> Path:
     start_step, seen = 0, 0
     existing = checkpoint.latest(run_dir)
     if resume and existing is not None:
-        start_step = checkpoint.load_into(student, optimizer, existing)
-        seen = start_step * per_step
+        stored_step = checkpoint.load_into(student, optimizer, existing)
+        # Continue by tokens, not by step number: the micro-batch is probed per
+        # machine, so a step here and a step in the previous run need not be the
+        # same size, and counting steps would silently skip or repeat work.
+        meta = checkpoint.read_meta(existing)
+        seen = int(meta.get("tokens") or stored_step * per_step)
+        start_step = seen // per_step
         if lead:
-            ui.good(f"resumed from {existing.name} at step {start_step}")
+            ui.good(f"resumed from {existing.name}: {seen / 1e6:.0f}M tokens "
+                    f"already seen, continuing at step {start_step}")
+            if seen >= budget_tokens:
+                ui.warn(f"train.max_tokens is {budget_tokens / 1e6:.0f}M and "
+                        f"{seen / 1e6:.0f}M are done — raise it to train further")
 
     trainable = student
     if distributed:
