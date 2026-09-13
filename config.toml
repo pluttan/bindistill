@@ -19,12 +19,15 @@ runs = "runs"
 
 [model]
 teacher = "Qwen/Qwen3-0.6B"
+binary = true           # false turns this into an ordinary fine-tune
 group = 128             # weights sharing one scale; 128 gives 1.125 bits/weight
 ste_clip = 1.0          # straight-through window, in units of the group scale
 freeze_full_precision = true   # train the binary layers only
 
 [data]
-kind = "fineweb"        # fineweb | text
+kind = "fineweb"        # fineweb | dolma | text
+dolma_version = "v1_7"
+subsets = []            # dolma only: e.g. ["books", "c4-filtered", "pes2o"]
 repo = "HuggingFaceFW/fineweb-edu"
 shard = "sample/10BT/{:03d}_00000.parquet"
 text_file = ""          # used when kind = "text"
@@ -32,8 +35,9 @@ train_tokens = 100_000_000
 eval_tokens = 1_000_000
 
 [train]
+objective = "distill"   # distill = match a teacher; language = next token only
 seq = 1024
-micro_batch = 2
+micro_batch = "auto"   # largest that fits, probed on the machine; or a number
 accum = 8
 lr = 2e-4               # master weights
 scale_lr = 5e-3         # group scales move faster; they start at the wrong value
@@ -92,8 +96,8 @@ teacher = "HuggingFaceTB/SmolLM2-135M"
 train_tokens = 300_000_000
 [presets.tiny.train]
 seq = 1024
-micro_batch = 2      # 8 did not fit in 8 GB: the logits alone are 768 MB a copy
-accum = 16           # same 32.8k tokens per step as before
+micro_batch = "auto" # 8 did not fit in 8 GB; the probe settles it per machine
+accum = 16           # micro x accum is the step size and is kept
 loss_chunk = 128
 max_tokens = 2.0e8
 lr = 3e-4
@@ -106,9 +110,30 @@ name = "small"
 teacher = "Qwen/Qwen3-0.6B"
 [presets.small.train]
 seq = 1024
-micro_batch = 2
+micro_batch = "auto"   # largest that fits, probed on the machine; or a number
 accum = 8
 max_tokens = 3.0e8
+
+# Ordinary fine-tuning on a mixture of domains, no teacher and no binary
+# weights. Same loop, same checkpoints, same resume.
+[presets.finetune]
+[presets.finetune.run]
+name = "finetune"
+[presets.finetune.model]
+binary = false
+[presets.finetune.train]
+objective = "language"
+lr = 1e-5
+seq = 1024
+micro_batch = "auto"
+accum = 8
+max_tokens = 1.0e9
+[presets.finetune.data]
+kind = "dolma"
+subsets = []         # empty takes every source; name them to pick domains
+train_tokens = 1_100_000_000
+[presets.finetune.eval]
+baselines = false
 
 # 1.7B, the size the Bonsai measurements were made against. Needs 40 GB or
 # several cards under torchrun; expect days rather than hours.

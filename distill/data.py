@@ -71,6 +71,87 @@ def _fineweb_documents(config, start_shard: int, skip: int):
         skip = 0
 
 
+
+def _dolma_urls(config) -> list[str]:
+    """The file list, fetched once and kept next to the corpus.
+
+    Dolma is served as plain https links to gzipped json lines, grouped by
+    source: books, filtered web, news, scientific papers, code. The subset name
+    is in the path, so a mixture of domains is a filter over this list rather
+    than a separate download mechanism.
+    """
+    import urllib.request
+
+    version = str(config.get("data.dolma_version", "v1_7"))
+    cache = config.path("paths.corpus") / f"dolma-{version}-urls.txt"
+    cache.parent.mkdir(parents=True, exist_ok=True)
+
+    if not cache.exists():
+        listing = (f"https://huggingface.co/datasets/allenai/dolma/raw/main/"
+                   f"urls/{version}.txt")
+        ui.step(f"fetching the {version} file list")
+        with urllib.request.urlopen(listing, timeout=60) as response:
+            cache.write_bytes(response.read())
+
+    urls = [line.strip() for line in cache.read_text().splitlines()
+            if line.strip().startswith("http")]
+
+    wanted = config.get("data.subsets") or []
+    if wanted:
+        # Interleave by source, so a mixture stays a mixture instead of reading
+        # one domain to exhaustion first. Sources hold wildly different numbers
+        # of files — books a handful, web hundreds — so zip_longest is used:
+        # plain zip would cut every source down to the shortest one.
+        from itertools import zip_longest
+
+        grouped = {name: [u for u in urls if f"/{name}/" in u] for name in wanted}
+        missing = [n for n, v in grouped.items() if not v]
+        if missing:
+            names = sorted({u.split("/")[-2] for u in urls})
+            raise ValueError(f"unknown dolma subsets {missing}; have: {names}")
+        urls = [u for row in zip_longest(*(grouped[n] for n in wanted))
+                for u in row if u is not None]
+    return urls
+
+
+def _dolma_documents(config, start_shard: int, skip: int):
+    """Stream the gzipped json lines; nothing is kept on disk."""
+    import gzip
+    import json as json_module
+    import urllib.request
+
+    urls = _dolma_urls(config)
+    if not urls:
+        raise ValueError("the dolma file list came back empty")
+
+    index = start_shard
+    while index < len(urls):
+        url = urls[index]
+        ui.step(f"streaming {url.split('/')[-2]}/{url.split('/')[-1]}")
+        request = urllib.request.Request(
+            url, headers={"User-Agent": "bindistill"})
+        with urllib.request.urlopen(request, timeout=120) as response:
+            with gzip.GzipFile(fileobj=response) as stream:
+                batch, seen = [], 0
+                for line in stream:
+                    seen += 1
+                    if seen <= skip:
+                        continue
+                    try:
+                        text = json_module.loads(line).get("text")
+                    except (ValueError, UnicodeDecodeError):
+                        continue
+                    if not text:
+                        continue
+                    batch.append(text)
+                    if len(batch) >= 256:
+                        yield index, seen, batch
+                        batch = []
+                if batch:
+                    yield index, seen, batch
+        index += 1
+        skip = 0
+
 def _text_documents(config, start_shard: int, skip: int):
     """A local file, split on blank lines, for training on your own material."""
     path = Path(str(config.require("data.text_file"))).expanduser()
@@ -115,8 +196,12 @@ def build_corpus(config, tokenizer) -> Path:
     tokens = np.lib.format.open_memmap(
         array_path, mode=mode, dtype=dtype, shape=(target,))
 
-    source = {"fineweb": _fineweb_documents, "text": _text_documents}
-    reader = source[config.get("data.kind", "fineweb")]
+    source = {"fineweb": _fineweb_documents, "dolma": _dolma_documents,
+              "text": _text_documents}
+    kind = config.get("data.kind", "fineweb")
+    if kind not in source:
+        raise ValueError(f"unknown data.kind '{kind}'; have: {sorted(source)}")
+    reader = source[kind]
     # `or` is wrong here: token id 0 is a perfectly ordinary end-of-text id.
     eos = getattr(tokenizer, "eos_token_id", None)
     if eos is None:
@@ -196,7 +281,11 @@ class TokenWindows:
         rows = np.stack([np.asarray(self.tokens[s:s + self.seq + 1],
                                     dtype=np.int64) for s in starts])
         chunk = torch.from_numpy(rows)
-        return chunk[:, :-1], chunk[:, 1:]
+        inputs, targets = chunk[:, :-1], chunk[:, 1:]
+        if torch.cuda.is_available():
+            # Pinned pages let the copy to the card overlap with computation.
+            inputs, targets = inputs.pin_memory(), targets.pin_memory()
+        return inputs, targets
 
     def state(self) -> dict:
         return {"rng": self.rng.bit_generator.state}

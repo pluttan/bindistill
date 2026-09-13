@@ -39,6 +39,7 @@ class _nullcontext:
 
 def distil_backward(student_logits, teacher_logits, targets, alpha: float,
                     temperature: float, chunk: int) -> tuple[float, float]:
+    """With `teacher_logits` of None this is plain next-token training."""
     """Accumulate the gradient into `student_logits` a slice at a time.
 
     Each slice gets its own leaf so the float32 softmax it needs is freed before
@@ -52,7 +53,11 @@ def distil_backward(student_logits, teacher_logits, targets, alpha: float,
     grad = torch.zeros_like(detached)
     length = detached.shape[1]
     total = detached.shape[0] * length
-    kl_sum = ce_sum = 0.0
+    # Accumulated on the device. Reading them per chunk with .item() stalls the
+    # pipeline: the card finishes the chunk and then waits for the host before
+    # starting the next one.
+    kl_sum = torch.zeros((), device=detached.device, dtype=torch.float32)
+    ce_sum = torch.zeros((), device=detached.device, dtype=torch.float32)
 
     for start in range(0, length, chunk):
         stop = min(length, start + chunk)
@@ -66,25 +71,32 @@ def distil_backward(student_logits, teacher_logits, targets, alpha: float,
         # One float32 cast, reused. At a vocabulary this size each cast is
         # larger than the model, and the naive version made six of them.
         piece_float = piece.float()
-        student_log = F.log_softmax(piece_float / temperature, dim=-1)
-        with torch.no_grad():
-            teacher_log = F.log_softmax(
-                teacher_logits[:, start:stop].float() / temperature, dim=-1)
 
-        kl = F.kl_div(student_log, teacher_log, reduction="sum",
-                      log_target=True) / rows
-        kl = kl * temperature * temperature
-        if temperature == 1.0:
-            # log_softmax is already there; cross_entropy would redo it.
-            ce = F.nll_loss(student_log.flatten(0, 1), gold.flatten())
-        else:
+        if teacher_logits is None:
             ce = F.cross_entropy(piece_float.flatten(0, 1), gold.flatten())
+            kl = torch.zeros((), device=piece_float.device)
+            student_log = teacher_log = None
+            loss = ce * share
+        else:
+            student_log = F.log_softmax(piece_float / temperature, dim=-1)
+            with torch.no_grad():
+                teacher_log = F.log_softmax(
+                    teacher_logits[:, start:stop].float() / temperature, dim=-1)
 
-        loss = (alpha * kl + (1.0 - alpha) * ce) * share
+            kl = F.kl_div(student_log, teacher_log, reduction="sum",
+                          log_target=True) / rows
+            kl = kl * temperature * temperature
+            if temperature == 1.0:
+                # log_softmax is already there; cross_entropy would redo it.
+                ce = F.nll_loss(student_log.flatten(0, 1), gold.flatten())
+            else:
+                ce = F.cross_entropy(piece_float.flatten(0, 1), gold.flatten())
+
+            loss = (alpha * kl + (1.0 - alpha) * ce) * share
         loss.backward()
         grad[:, start:stop] = piece.grad
-        kl_sum += kl.item() * share
-        ce_sum += ce.item() * share
+        kl_sum += kl.detach() * share
+        ce_sum += ce.detach() * share
         del piece, piece_float, student_log, teacher_log
 
     student_logits.backward(grad)
@@ -137,6 +149,34 @@ def cuda_unavailable_reason() -> str:
     return f"torch built for CUDA {torch.version.cuda}, no card visible"
 
 
+def fit_micro_batch(trial, wanted: int, budget: int, device: str) -> int:
+    """Largest micro-batch that survives one real step, at most `budget`.
+
+    A conservative default leaves the card idle; a guess that is too large dies
+    hours in. One trial step costs seconds and settles it on the actual machine.
+    """
+    import torch
+
+    candidates = [n for n in (32, 24, 16, 12, 8, 6, 4, 3, 2, 1)
+                  if wanted <= n <= budget] or [wanted]
+
+    for size in candidates:
+        try:
+            trial(size)
+        except torch.OutOfMemoryError:
+            if device.startswith("cuda"):
+                torch.cuda.empty_cache()
+            continue
+        except RuntimeError as problem:
+            if "out of memory" not in str(problem).lower():
+                raise
+            if device.startswith("cuda"):
+                torch.cuda.empty_cache()
+            continue
+        return size
+    return 1
+
+
 # ==============================
 # ===  Loop                  ===
 # ==============================
@@ -157,15 +197,17 @@ def run(config, resume: bool = True) -> Path:
         torch.cuda.set_device(device)
 
     seq = int(config.require("train.seq"))
-    micro = int(config.require("train.micro_batch"))
+    raw_micro = config.require("train.micro_batch")
+    auto_micro = str(raw_micro).lower() == "auto"
+    micro = 1 if auto_micro else int(raw_micro)
     accum = int(config.require("train.accum"))
     chunk = int(config.get("train.loss_chunk", 256))
     alpha = float(config.get("train.alpha", 0.9))
     temperature = float(config.get("train.temperature", 1.0))
     grad_clip = float(config.get("train.grad_clip", 1.0))
     per_step = micro * accum * seq * world
-    budget = int(float(config.require("train.max_tokens")))
-    total_steps = max(1, budget // per_step)
+    budget_tokens = int(float(config.require("train.max_tokens")))
+    total_steps = max(1, budget_tokens // per_step)
 
     run_dir = config.run_dir()
     if lead:
@@ -173,10 +215,10 @@ def run(config, resume: bool = True) -> Path:
         ui.head("Training")
         ui.field("preset", config.get("preset", "-"))
         ui.field("device", f"{device} x{world}" if world > 1 else device)
-        ui.field("teacher", config.require("model.teacher"))
-        ui.field("tokens per step", f"{per_step / 1e3:.1f}k")
-        ui.field("steps planned", total_steps)
-        ui.field("token budget", f"{budget / 1e9:.3f}B")
+        ui.field("objective", objective)
+        ui.field("teacher" if objective == "distill" else "model",
+                 config.require("model.teacher"))
+        ui.field("token budget", f"{budget_tokens / 1e9:.3f}B")
         ui.field("run directory", run_dir)
 
     if lead and kind == "cpu":
@@ -190,7 +232,12 @@ def run(config, resume: bool = True) -> Path:
         ui.say("      check `make status`; set run.device to force a card",
                "overlay")
 
-    teacher = models.load_teacher(config, device, dtype)
+    objective = str(config.get("train.objective", "distill")).lower()
+    if objective not in ("distill", "language"):
+        raise ValueError(f"train.objective must be distill or language, "
+                         f"got '{objective}'")
+    teacher = models.load_teacher(config, device, dtype) \
+        if objective == "distill" else None
     student, replaced = models.load_student(config, device)
     if lead:
         models.describe(student, replaced)
@@ -229,11 +276,42 @@ def run(config, resume: bool = True) -> Path:
     keep = int(config.get("train.keep_checkpoints", 3))
 
     student.train()
+
+    if auto_micro:
+        def trial(size: int) -> None:
+            ids, gold = stream.batch(size)
+            ids, gold = ids.to(device), gold.to(device)
+            reference = None
+            if teacher is not None:
+                with torch.no_grad():
+                    reference = teacher(ids).logits
+            amp = torch.autocast(device_type=kind, dtype=dtype) \
+                if (kind == "cuda" and dtype is not torch.float32) \
+                else _nullcontext()
+            with amp:
+                logits = student(ids).logits
+            distil_backward(logits, reference, gold, alpha, temperature, chunk)
+            optimizer.zero_grad(set_to_none=True)
+            del logits, reference, ids, gold
+
+        # `accum` stays as configured: it is how many micro-batches make a step.
+        # Only their size is decided here, by what the card actually holds.
+        micro = fit_micro_batch(trial, 1, 32, kind)
+        per_step = micro * accum * seq * world
+        total_steps = max(1, budget_tokens // per_step)
+        if lead:
+            ui.good(f"micro-batch fitted to {micro}")
+
+    if lead:
+        ui.field("tokens per step", f"{per_step / 1e3:.1f}k")
+        ui.field("steps planned", total_steps)
+
     # Only CUDA gets mixed precision here: the student's master weights are
     # float32, and a float32 matmul on a GPU is both slower and larger than it
     # needs to be. On cpu and mps the cast buys nothing and costs correctness.
     autocast_on = kind == "cuda" and dtype is not torch.float32
     started = time.time()
+    marker = (started, seen)
     progress = ui.Progress("training", total_steps) if lead else None
 
     for step in range(start_step, total_steps):
@@ -242,12 +320,15 @@ def run(config, resume: bool = True) -> Path:
         optimizer.param_groups[1]["lr"] = base_scale_lr * factor
         optimizer.zero_grad(set_to_none=True)
 
-        kl_total = ce_total = 0.0
+        kl_total = ce_total = None
         for micro_step in range(accum):
             ids, gold = stream.batch(micro)
-            ids, gold = ids.to(device), gold.to(device)
-            with torch.no_grad():
-                reference = teacher(ids).logits
+            ids = ids.to(device, non_blocking=True)
+            gold = gold.to(device, non_blocking=True)
+            reference = None
+            if teacher is not None:
+                with torch.no_grad():
+                    reference = teacher(ids).logits
             # Only the last micro-batch needs the gradient all-reduce.
             last = micro_step == accum - 1
             sync = trainable.no_sync() if (distributed and not last) \
@@ -259,8 +340,8 @@ def run(config, resume: bool = True) -> Path:
                     logits = trainable(ids).logits
                 kl, ce = distil_backward(logits, reference, gold, alpha,
                                          temperature, chunk)
-            kl_total += kl / accum
-            ce_total += ce / accum
+            kl_total = kl / accum if kl_total is None else kl_total + kl / accum
+            ce_total = ce / accum if ce_total is None else ce_total + ce / accum
             del logits, reference
 
         if grad_clip > 0:
@@ -268,20 +349,35 @@ def run(config, resume: bool = True) -> Path:
         optimizer.step()
         seen += per_step
 
-        if lead and (step % log_every == 0 or step == total_steps - 1):
+        reporting = lead and (step % log_every == 0 or step == total_steps - 1)
+        if reporting:
+            kl_total = float(kl_total)
+            ce_total = float(ce_total)
+
+        if reporting:
+            now = time.time()
+            rate = (seen - marker[1]) / max(1e-6, now - marker[0])
+            marker = (now, seen)
             record = {"step": step, "tokens": seen, "kl": kl_total,
                       "ce": ce_total, "ppl": math.exp(min(20.0, ce_total)),
                       "lr": base_lr * factor,
-                      "elapsed": round(time.time() - started, 1)}
+                      "tokens_per_second": round(rate, 1),
+                      "elapsed": round(now - started, 1)}
+            if kind == "cuda":
+                record["gpu_gb"] = round(
+                    torch.cuda.max_memory_allocated() / 2 ** 30, 2)
             metrics.write(record)
             progress.update(step - start_step)
             if step % (log_every * 10) == 0:
                 ui.say()
+                extra = f"  {record['gpu_gb']:.1f} GB" if "gpu_gb" in record else ""
                 ui.step(f"step {step:>6}  kl {kl_total:7.4f}  "
                         f"ce {ce_total:6.3f}  ppl {record['ppl']:9.2f}  "
-                        f"{seen / 1e6:.0f}M tokens")
+                        f"{seen / 1e6:.0f}M tokens  "
+                        f"{record['tokens_per_second'] / 1e3:.1f}k tok/s{extra}")
 
-        if lead and eval_every and step and step % eval_every == 0:
+        if lead and eval_every and step and step % eval_every == 0 \
+                and teacher is not None:
             score = quick_eval(config, student, teacher, device, chunk)
             # `score` carries its own "tokens" — how many were scored — which
             # used to overwrite the training counter and flatten the x axis.
