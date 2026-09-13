@@ -134,14 +134,29 @@ def _dolma_urls(config) -> list[str]:
 
 
 def _shard_lines(url: str, timeout: float):
-    """The decompressed lines of one remote file."""
+    """The decompressed lines of one remote file.
+
+    Two compressions are in play: gzip for most of it, zstd for the web part,
+    which is where nearly all the text is.
+    """
     import gzip
+    import io as io_module
     import urllib.request
 
     request = urllib.request.Request(url, headers={"User-Agent": "bindistill"})
     with urllib.request.urlopen(request, timeout=timeout) as response:
-        with gzip.GzipFile(fileobj=response) as stream:
-            yield from stream
+        if url.endswith((".zst", ".zstd")):
+            try:
+                import zstandard
+            except ImportError as problem:
+                raise ImportError(
+                    "this corpus is zstd-compressed; run `make install` again "
+                    "or `pip install zstandard`") from problem
+            reader = zstandard.ZstdDecompressor().stream_reader(response)
+            yield from io_module.BufferedReader(reader, 2 ** 20)
+        else:
+            with gzip.GzipFile(fileobj=response) as stream:
+                yield from stream
 
 
 def _shard_batches(open_lines, url: str, skip: int, attempts: int,
@@ -196,25 +211,120 @@ def _shard_batches(open_lines, url: str, skip: int, attempts: int,
             pause(delay)
 
 
+def check_reachable(url: str, timeout: float = 20.0) -> str | None:
+    """Why this host cannot be read, or None when it can.
+
+    Asked once before a fetch that would otherwise spend a day timing out
+    file by file: a blocked host and a slow one look identical per request
+    and completely different across two hundred of them.
+    """
+    import urllib.request
+
+    request = urllib.request.Request(url, method="HEAD",
+                                     headers={"User-Agent": "bindistill"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            code = getattr(response, "status", 200)
+            return None if code < 400 else f"HTTP {code}"
+    except NETWORK_TROUBLE as problem:
+        return f"{type(problem).__name__}: {problem}"
+
+
+OLMO_REPO = "allenai/olmo-mix-1124"
+
+
+def _olmo_urls(config) -> list[str]:
+    """The file list for the OLMo mix, which lives on the hub itself.
+
+    Same shape as dolma - gzipped json lines with a "text" field, from the
+    same authors - but served by huggingface.co rather than olmo-data.org,
+    which some networks cannot reach. The domain is the directory name, so a
+    mixture is again a filter over this list.
+    """
+    repo = str(config.get("data.olmo_repo", OLMO_REPO))
+    cache = config.path("paths.corpus") / f"{repo.replace('/', '_')}-files.txt"
+    cache.parent.mkdir(parents=True, exist_ok=True)
+
+    if not cache.exists():
+        from huggingface_hub import list_repo_files
+
+        ui.step(f"listing {repo}")
+        names = [n for n in list_repo_files(repo, repo_type="dataset")
+                 if n.endswith((".json.gz", ".jsonl.zst", ".jsonl.zstd"))]
+        cache.write_text("\n".join(sorted(names)))
+
+    names = [n for n in cache.read_text().splitlines() if n.strip()]
+    wanted = config.get("data.subsets") or []
+    if wanted:
+        grouped = {name: [n for n in names if f"data/{name}/" in n]
+                   for name in wanted}
+        missing = [n for n, v in grouped.items() if not v]
+        if missing:
+            have = sorted({n.split("/")[1] for n in names
+                           if n.startswith("data/") and "/" in n[5:]})
+            raise ValueError(f"unknown olmo subsets {missing}; have: {have}")
+        from itertools import zip_longest
+
+        names = [n for row in zip_longest(*(grouped[k] for k in wanted))
+                 for n in row if n is not None]
+
+    base = f"https://huggingface.co/datasets/{repo}/resolve/main/"
+    return [base + name for name in names]
+
+
+def _olmo_documents(config, start_shard: int, skip: int):
+    """The OLMo mix, read exactly the way dolma is."""
+    yield from _stream_shards(config, _olmo_urls(config), start_shard, skip)
+
+
 def _dolma_documents(config, start_shard: int, skip: int):
     """Stream the gzipped json lines; nothing is kept on disk."""
     urls = _dolma_urls(config)
     if not urls:
         raise ValueError("the dolma file list came back empty")
 
+    yield from _stream_shards(config, urls, start_shard, skip)
+
+
+def _stream_shards(config, urls: list[str], start_shard: int, skip: int):
+    """Walk a list of gzipped json-lines files, resuming and retrying."""
     timeout = float(config.get("data.timeout", 120))
     attempts = max(1, int(config.get("data.retries", 5)))
 
+    host = urls[start_shard % len(urls)]
+    ui.detail(f"checking whether {host.split('/')[2]} answers at all")
+    trouble = check_reachable(host)
+    if trouble is not None:
+        raise ConnectionError(
+            f"{host.split('/')[2]} did not answer ({trouble}).\n"
+            f"      dolma is served from this host and nowhere else - it is "
+            f"not on huggingface.co, so a working hub does not help.\n"
+            f"      Either route around it:\n"
+            f"          HTTPS_PROXY=http://127.0.0.1:2080 make fetch\n"
+            f"      or use a corpus that lives on the hub instead:\n"
+            f"          make fetch DATA=fineweb")
+
+    # Two hundred files behind one unreachable host is a day of timeouts, so
+    # a run of failures ends the fetch rather than grinding through the list.
+    giving_up = 0
     index = start_shard
     while index < len(urls):
         url = urls[index]
         ui.step(f"streaming {url.split('/')[-2]}/{url.split('/')[-1]}")
         ui.detail(f"file {index + 1} of {len(urls)}, resuming at line {skip}")
         ui.detail(f"url {url}")
+        delivered = False
         for seen, batch in _shard_batches(
                 lambda u: _shard_lines(u, timeout), url, skip, attempts,
                 time.sleep):
+            delivered = True
             yield index, seen, batch
+        giving_up = 0 if delivered else giving_up + 1
+        if giving_up >= 3:
+            raise ConnectionError(
+                f"three files in a row gave nothing; the source looks "
+                f"unreachable from here. See {url.split('/')[2]} above, or "
+                f"try `make fetch DATA=fineweb`")
         index += 1
         skip = 0
 
@@ -263,7 +373,7 @@ def build_corpus(config, tokenizer) -> Path:
         array_path, mode=mode, dtype=dtype, shape=(target,))
 
     source = {"fineweb": _fineweb_documents, "dolma": _dolma_documents,
-              "text": _text_documents}
+              "olmo": _olmo_documents, "text": _text_documents}
     kind = config.get("data.kind", "fineweb")
     if kind not in source:
         raise ValueError(f"unknown data.kind '{kind}'; have: {sorted(source)}")

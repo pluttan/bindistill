@@ -603,6 +603,42 @@ def _cache_location():
                     os.environ[name] = value
 
 
+@case("an unreachable source is reported, not waited on")
+def _unreachable():
+    """Two hundred files behind a blocked host is a day of silent timeouts;
+    it has to be one message instead.
+    """
+    from . import data
+
+    class Config:
+        def __init__(self):
+            self.values = {"data.timeout": 1, "data.retries": 1}
+
+        def get(self, key, default=None):
+            return self.values.get(key, default)
+
+    urls = [f"https://blocked.example/dolma/books/books-{i:04d}.json.gz"
+            for i in range(200)]
+    original_urls, original_check = data._dolma_urls, data.check_reachable
+    data._dolma_urls = lambda config: urls
+    data.check_reachable = lambda url, timeout=20.0: "TimeoutError: timed out"
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            try:
+                next(iter(data._dolma_documents(Config(), 0, 0)))
+            except ConnectionError as problem:
+                message = str(problem)
+            else:
+                raise AssertionError("an unreachable host must be reported")
+    finally:
+        data._dolma_urls, data.check_reachable = original_urls, original_check
+
+    # The message has to carry the way out, not just the failure.
+    assert "blocked.example" in message
+    assert "HTTPS_PROXY" in message
+    assert "fineweb" in message
+
+
 @case("a dropped connection resumes instead of ending the fetch")
 def _shard_retry():
     """Reading hundreds of gigabytes, a read will time out sooner or later.

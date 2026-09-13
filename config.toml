@@ -30,9 +30,13 @@ ste_clip = 1.0          # straight-through window, in units of the group scale
 freeze_full_precision = true   # train the binary layers only
 
 [data]
-kind = "fineweb"        # fineweb | dolma | text
+kind = "fineweb"        # fineweb | olmo | dolma | text
+# olmo is the same corpus family as dolma, from the same authors, but served
+# by huggingface.co. dolma comes from olmo-data.org alone, which some networks
+# cannot reach at all.
+olmo_repo = "allenai/olmo-mix-1124"
 dolma_version = "v1_7"
-subsets = []            # dolma only: e.g. ["books", "c4-filtered", "pes2o"]
+subsets = []            # olmo/dolma only: e.g. ["dclm", "pes2o", "wiki"]
 repo = "HuggingFaceFW/fineweb-edu"
 shard = "sample/10BT/{:03d}_00000.parquet"
 text_file = ""          # used when kind = "text"
@@ -166,7 +170,7 @@ micro_batch = "auto"
 accum = 8
 max_tokens = 1.0e9
 [presets.finetune.data]
-kind = "dolma"
+kind = "olmo"
 subsets = []         # empty takes every source; name them to pick domains
 train_tokens = 1_100_000_000
 [presets.finetune.eval]

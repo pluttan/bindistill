@@ -61,9 +61,12 @@ STOP_ARGS := $(if $(strip $(STOP)),--set train.min_improvement_per_hour=$(strip 
              $(if $(strip $(WINDOW)),--set train.improvement_window_hours=$(strip $(WINDOW))) \
              $(if $(strip $(PATIENCE)),--set train.stop_patience=$(strip $(PATIENCE)))
 
-# DATA is fineweb, dolma or text. SUBSETS names dolma domains; empty takes all.
-DATA    ?= dolma
-SUBSETS ?= ["books","c4-filtered","pes2o"]
+# DATA is olmo, fineweb, dolma or text. SUBSETS names domains, empty takes all.
+# olmo by default: dolma is served from olmo-data.org alone, which some
+# networks cannot reach, while the same corpus family sits on the hub as
+# allenai/olmo-mix-1124. dclm is the web part and nearly all of the text.
+DATA    ?= olmo
+SUBSETS ?= ["dclm","pes2o","wiki","arxiv"]
 DATA_ARGS := --set data.kind=$(strip $(DATA)) \
              $(if $(strip $(SUBSETS)),--set 'data.subsets=$(strip $(SUBSETS))')
 FLAGS  := --preset $(CHOSEN) \
