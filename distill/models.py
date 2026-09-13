@@ -30,17 +30,42 @@ def local_dir(config) -> Path:
     return config.path("paths.models") / name
 
 
+def folder_size(path: Path) -> int:
+    return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+
+
 def fetch_model(config) -> Path:
     """Download the checkpoint into the package. Safe to re-run."""
+    import time
+
     from huggingface_hub import snapshot_download
 
     repo = str(config.require("model.teacher"))
     target = local_dir(config)
     target.mkdir(parents=True, exist_ok=True)
-    ui.step(f"downloading {repo}")
-    snapshot_download(repo, local_dir=str(target),
-                      allow_patterns=KEEP, ignore_patterns=DROP)
-    ui.good(f"model in {target}")
+    attempts = max(1, int(config.get("data.retries", 5)))
+
+    for attempt in range(1, attempts + 1):
+        ui.step(f"downloading {repo}")
+        # The progress bar reaches 100% when the bytes are in; hashing them and
+        # laying them out in the folder happens after that, with nothing on
+        # screen. On a slow disk it looks like a hang, so say what is going on.
+        ui.say("      after the bar fills, files are checked and unpacked - "
+               "this part is silent", "overlay")
+        try:
+            snapshot_download(repo, local_dir=str(target),
+                              allow_patterns=KEEP, ignore_patterns=DROP,
+                              max_workers=4)
+            break
+        except (OSError, EOFError) as problem:
+            if attempt == attempts:
+                raise
+            delay = min(60.0, 5.0 * 2 ** (attempt - 1))
+            ui.warn(f"{problem} — retrying in {delay:.0f}s "
+                    f"({attempt} of {attempts})")
+            time.sleep(delay)
+
+    ui.good(f"model in {target} ({folder_size(target) / 2 ** 30:.2f} GB)")
     return target
 
 
