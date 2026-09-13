@@ -46,6 +46,11 @@ def use_local_cache(config) -> Path | None:
     # Older releases read these instead; setting them costs nothing.
     os.environ.setdefault("HF_HUB_CACHE", str(cache / "hub"))
     os.environ.setdefault("TRANSFORMERS_CACHE", str(cache / "hub"))
+    # The hub's own read timeout is ten seconds. On a slow or shared link that
+    # expires mid-file, and the retry starts the same file again: the bar sits
+    # at the same place indefinitely instead of reporting anything.
+    os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT",
+                          str(int(float(config.get("data.timeout", 120)))))
     return cache
 
 
@@ -79,7 +84,7 @@ def fetch_model(config) -> Path:
         try:
             snapshot_download(repo, local_dir=str(target),
                               allow_patterns=KEEP, ignore_patterns=DROP,
-                              max_workers=4)
+                              max_workers=int(config.get("data.workers", 4)))
             break
         except (OSError, EOFError) as problem:
             if attempt == attempts:

@@ -45,6 +45,9 @@ eval_tokens = 1_000_000
 # attempts that one file is skipped rather than the whole fetch abandoned.
 retries = 5
 timeout = 120
+# Parallel connections for the model download. Lower it to 1 on a link that
+# drops under load.
+workers = 4
 
 [train]
 objective = "distill"   # distill = match a teacher; language = next token only
