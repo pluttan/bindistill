@@ -82,6 +82,15 @@ def run(config, source: Path) -> dict:
             ratio = (log_scale.float().exp() / naive.clamp_min(1e-8))
             scale_ratios.append(float(ratio.mean()))
 
+    if counted_total == 0:
+        # Otherwise the report reads "no signature" — a false negative — when
+        # the real problem is that the checkpoint belongs to another model.
+        ui.fail("no matrix matched the teacher: this checkpoint was not "
+                "trained from " + str(config.require("model.teacher")))
+        ui.say("      check that model.teacher matches the run that produced "
+               "this checkpoint", "overlay")
+        return {"error": "no matching matrices"}
+
     share = flipped_total / max(1, counted_total)
     ui.say()
     ui.field("matrices measured", len(scale_ratios))
