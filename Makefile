@@ -95,9 +95,14 @@ detect:
 	@sh scripts/detect.sh --report
 
 # Build the environment only when it is not there yet.
+# An existing environment is not necessarily an up-to-date one: pulling new
+# code can bring a new requirement with it, and skipping this step means
+# finding that out hours later, in the middle of a fetch.
 ensure:
 	@if [ -x "$(PY)" ]; then \
-		echo "  environment present"; \
+		echo "  environment present, checking requirements"; \
+		$(PIP) install -q -r requirements.txt || \
+			echo "  could not install requirements — run 'make install'"; \
 	else \
 		$(MAKE) install; \
 	fi
