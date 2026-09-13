@@ -105,7 +105,7 @@ def run(config, checkpoint=None) -> dict:
     rows.append(("teacher (full precision)", f"{baseline['perplexity']:.2f}",
                  "1.000", "0.0000"))
 
-    if config.get("eval.baselines", True):
+    if config.get("eval.baselines", True) and config.get("model.binary", True):
         naive, count = models.load_naive_student(config, device, dtype)
         scores = measure(naive, teacher, inputs, targets, device, chunk)
         results["naive"] = scores

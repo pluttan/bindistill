@@ -211,6 +211,88 @@ def _chunked_loss_at(temperature: float):
     assert abs(ce_value - ce.item()) < 1e-4, (ce_value, ce.item())
 
 
+@case("micro-batch probe backs off to what fits")
+def _micro_batch():
+    import torch
+
+    from .train import fit_micro_batch
+
+    for limit in (1, 3, 7, 16, 100):
+        def trial(size, limit=limit):
+            if size > limit:
+                raise torch.OutOfMemoryError("CUDA out of memory")
+
+        got = fit_micro_batch(trial, 1, 32, "cuda")
+        assert got <= limit, f"probe chose {got} where only {limit} fits"
+        assert got >= min(limit, 1)
+
+    # A failure that is not about memory must not be mistaken for one.
+    def broken(size):
+        raise RuntimeError("shapes do not match")
+
+    try:
+        fit_micro_batch(broken, 1, 32, "cuda")
+    except RuntimeError as problem:
+        assert "shapes" in str(problem)
+    else:
+        raise AssertionError("an unrelated error was swallowed")
+
+
+@case("loss works with no teacher at all")
+def _no_teacher():
+    import torch
+    import torch.nn.functional as F
+
+    from .train import distil_backward
+
+    torch.manual_seed(0)
+    batch, length, vocab = 2, 16, 40
+    gold = torch.randint(0, vocab, (batch, length))
+    logits = torch.randn(batch, length, vocab, requires_grad=True)
+
+    reference = F.cross_entropy(logits.flatten(0, 1), gold.flatten())
+    reference.backward()
+    wanted = logits.grad.clone()
+
+    logits.grad = None
+    other = logits.detach().clone().requires_grad_(True)
+    kl, ce = distil_backward(other, None, gold, 0.9, 1.0, 5)
+
+    assert kl == 0.0, "there is no teacher to diverge from"
+    assert abs(float(ce) - reference.item()) < 1e-4
+    assert torch.allclose(other.grad, wanted, atol=1e-6)
+
+
+@case("dolma subsets are interleaved, unknown ones refused")
+def _dolma_subsets():
+    from . import config as config_module
+    from .data import _dolma_urls
+
+    urls = ["https://x/dolma-v1_7/books/books-0000.json.gz",
+            "https://x/dolma-v1_7/books/books-0001.json.gz",
+            "https://x/dolma-v1_7/c4-filtered/c4-0000.json.gz",
+            "https://x/dolma-v1_7/c4-filtered/c4-0001.json.gz"]
+
+    with tempfile.TemporaryDirectory() as folder:
+        root = Path(folder)
+        (root / "dolma-v1_7-urls.txt").write_text("\n".join(urls))
+        loaded = config_module.load(preset="smoke", overrides=[
+            f"paths.corpus={root}", "data.kind=dolma"])
+
+        loaded.set("data.subsets", ["books", "c4-filtered"])
+        mixed = _dolma_urls(loaded)
+        assert [u.split("/")[-2] for u in mixed] == \
+            ["books", "c4-filtered", "books", "c4-filtered"], mixed
+
+        loaded.set("data.subsets", ["nope"])
+        try:
+            _dolma_urls(loaded)
+        except ValueError as problem:
+            assert "nope" in str(problem) and "books" in str(problem)
+        else:
+            raise AssertionError("an unknown subset was accepted")
+
+
 @case("learning rate warms up then decays")
 def _schedule():
     from .train import learning_rate_factor
@@ -230,7 +312,16 @@ def _schedule():
 def _config():
     from . import config as config_module
 
-    loaded = config_module.load(preset="smoke", overrides=["train.lr=1e-5"])
+    loaded = config_module.load(preset="smoke", overrides=[
+        "train.lr=1e-5",
+        'data.subsets=["books","c4-filtered"]',
+        "eval.windows=4"])
+    assert loaded.get("data.subsets") == ["books", "c4-filtered"], \
+        f"a list on the command line arrived as {loaded.get('data.subsets')!r}"
+    assert loaded.get("eval.windows") == 4
+    assert config_module.load(preset="smoke",
+                              overrides=["data.subsets=books,pes2o"]
+                              ).get("data.subsets") == ["books", "pes2o"]
     assert loaded.get("model.teacher") == "HuggingFaceTB/SmolLM2-135M"
     assert loaded.get("train.lr") == 1e-5
     assert loaded.get("train.alpha") == 0.9, "defaults must survive a preset"

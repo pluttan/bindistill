@@ -90,7 +90,12 @@ def load_teacher(config, device: str, dtype):
 
 
 def load_student(config, device: str):
-    """Full precision master weights, binary forward, blocks only trainable."""
+    """The model being trained.
+
+    With `model.binary` the linear layers inside the blocks are replaced by
+    one-bit ones and only those train. Without it nothing is replaced and this
+    is an ordinary fine-tune — same corpus, same loop, same checkpoints.
+    """
     import torch
     from transformers import AutoModelForCausalLM
 
@@ -98,6 +103,12 @@ def load_student(config, device: str):
 
     model = _from_pretrained(
         AutoModelForCausalLM, model_source(config), torch.float32)
+
+    if not config.get("model.binary", True):
+        model.to(device)
+        _enable_checkpointing(config, model, device)
+        return model, []
+
     replaced = binarise_model(
         model,
         group=int(config.get("model.group", 128)),
@@ -113,6 +124,11 @@ def load_student(config, device: str):
             param.requires_grad_(owner in binary_names)
 
     model.to(device)
+    _enable_checkpointing(config, model, device)
+    return model, replaced
+
+
+def _enable_checkpointing(config, model, device: str) -> None:
     from .config import device_type
 
     if config.get("train.gradient_checkpointing", True) \
@@ -129,7 +145,6 @@ def load_student(config, device: str):
         if hasattr(model, "enable_input_require_grads"):
             model.enable_input_require_grads()
         model.config.use_cache = False
-    return model, replaced
 
 
 def load_naive_student(config, device: str, dtype):
@@ -150,6 +165,14 @@ def load_naive_student(config, device: str, dtype):
 
 def describe(model, replaced: list[str]) -> None:
     from .binary import binary_parameters
+
+    if not replaced:
+        total = sum(p.numel() for p in model.parameters())
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        ui.field("parameters", f"{total / 1e6:.1f}M")
+        ui.field("mode", "full precision fine-tune")
+        ui.field("trainable", f"{trainable / 1e6:.1f}M values")
+        return
 
     total = sum(p.numel() for p in model.parameters())
     binary, bits = binary_parameters(model)

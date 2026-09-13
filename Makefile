@@ -1,3 +1,9 @@
+# Hardware decides two things before anything is installed: which torch build
+# matches the driver, and which preset fits the card. Both are overridable.
+DETECTED    := $(shell sh scripts/detect.sh 2>/dev/null)
+AUTO_CUDA   := $(patsubst TORCH_CUDA=%,%,$(filter TORCH_CUDA=%,$(DETECTED)))
+AUTO_PRESET := $(patsubst PRESET=%,%,$(filter PRESET=%,$(DETECTED)))
+
 VENV   := venv
 # The environment is built with python3.12, but the interpreter inside it is
 # addressed without a version: a venv made by another 3.x still works, and every
@@ -5,18 +11,51 @@ VENV   := venv
 PY     := $(VENV)/bin/python
 PIP    := $(VENV)/bin/pip
 
-PRESET ?= small
+PRESET ?= $(if $(AUTO_PRESET),$(AUTO_PRESET),small)
 GPUS   ?= 1
-DEVICE ?=              # e.g. DEVICE=cuda:1 to pick a card
-CUDA   ?=              # e.g. CUDA=cu121 to match an older driver
+# DEVICE=cuda:1 picks a card; CUDA=cu121 forces a torch build.
+# Trailing comments are kept off these lines on purpose: make would take the
+# spaces before the "#" as part of the value, and an "empty" variable holding a
+# space is treated as set.
+DEVICE ?=
+CUDA   ?= $(AUTO_CUDA)
 ARGS   ?=
+
+# DATA is fineweb, dolma or text. SUBSETS names dolma domains; empty takes all.
+DATA    ?= dolma
+SUBSETS ?= ["books","c4-filtered","pes2o"]
+DATA_ARGS := --set data.kind=$(strip $(DATA)) \
+             $(if $(strip $(SUBSETS)),--set 'data.subsets=$(strip $(SUBSETS))')
 FLAGS  := --preset $(PRESET) $(if $(DEVICE),--set run.device=$(DEVICE)) $(ARGS)
 
-TORCH_INDEX := $(if $(CUDA),--index-url https://download.pytorch.org/whl/$(CUDA))
+TORCH_INDEX := $(if $(strip $(CUDA)),\
+                 --index-url https://download.pytorch.org/whl/$(strip $(CUDA)))
 
-.PHONY: all install torch selftest status fetch train resume eval profile export smoke train-multi offline clean
+.PHONY: all update detect ensure install torch selftest status fetch train resume eval profile export smoke train-multi offline clean
 
-all: install selftest
+# The whole thing: pick up the latest code, look at the hardware, install what
+# matches it, check the machinery, fetch a mixture of domains, and train. Safe
+# to re-run — every step continues rather than starts over.
+all: update ensure detect selftest fetch train
+
+# Latest code, but never at the cost of local work: a fast-forward or nothing.
+update:
+	@if git rev-parse --git-dir >/dev/null 2>&1; then \
+		git pull --ff-only || echo "  pull skipped: local commits or changes, resolve by hand"; \
+	else \
+		echo "  not a git checkout, skipping update"; \
+	fi
+
+detect:
+	@sh scripts/detect.sh --report
+
+# Build the environment only when it is not there yet.
+ensure:
+	@if [ -x "$(PY)" ]; then \
+		echo "  environment present"; \
+	else \
+		$(MAKE) install; \
+	fi
 
 install:
 	python3.12 -m venv $(VENV) && $(PIP) install -U pip
@@ -38,16 +77,16 @@ status:
 
 # Needs a network. Puts the teacher and the corpus inside this folder.
 fetch:
-	$(PY) main.py fetch $(FLAGS)
+	$(PY) main.py fetch $(FLAGS) $(DATA_ARGS)
 
 train:
-	PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True $(PY) main.py train $(FLAGS)
+	PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True $(PY) main.py train $(FLAGS) $(DATA_ARGS)
 
 # Same as train; it always continues from the newest checkpoint.
 resume: train
 
 eval:
-	$(PY) main.py eval $(FLAGS)
+	$(PY) main.py eval $(FLAGS) $(DATA_ARGS)
 
 # Does our own result carry the signature we used to argue Bonsai was trained?
 profile:

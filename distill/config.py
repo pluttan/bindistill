@@ -35,17 +35,30 @@ def _merge(base: dict, patch: dict) -> dict:
 
 
 def _coerce(text: str) -> Any:
-    lowered = text.strip().lower()
+    stripped = text.strip()
+    lowered = stripped.lower()
     if lowered in ("true", "false"):
         return lowered == "true"
     if lowered in ("none", "null"):
         return None
+    # A list on the command line has to arrive as a list: settings like
+    # data.subsets are iterated, and a string iterates character by character
+    # without complaining about it.
+    if stripped.startswith(("[", "{")):
+        import json
+
+        try:
+            return json.loads(stripped)
+        except ValueError as problem:
+            raise ValueError(f"could not read {stripped!r} as a list: {problem}")
+    if "," in stripped and not stripped.replace(",", "").strip().isdigit():
+        return [part.strip() for part in stripped.split(",") if part.strip()]
     try:
-        return int(text)
+        return int(stripped)
     except ValueError:
         pass
     try:
-        return float(text)
+        return float(stripped)
     except ValueError:
         return text
 
