@@ -40,8 +40,12 @@ def corpus_name(config) -> str:
 
 
 def corpus_files(config) -> tuple[Path, Path]:
-    base = config.path("paths.corpus") / corpus_name(config)
-    return base.with_suffix(".npy"), base.with_suffix(".json")
+    # Not with_suffix: teacher names carry dots ("Qwen3-0.6B"), and it would
+    # replace everything after the first one - every corpus, whatever its
+    # source or size, landing on the same file and rebuilding over the last.
+    folder = config.path("paths.corpus")
+    name = corpus_name(config)
+    return folder / f"{name}.npy", folder / f"{name}.json"
 
 
 def token_dtype(vocab: int):

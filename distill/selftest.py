@@ -687,6 +687,39 @@ def _shard_retry():
                                                "document 9"]
 
 
+@case("each corpus gets its own file")
+def _corpus_names():
+    """Teacher names carry dots, and with_suffix() truncates at the first one:
+    every corpus would share a file and rebuild over the last one.
+    """
+    from . import config as config_module
+    from . import data
+
+    with tempfile.TemporaryDirectory() as folder:
+        root = Path(folder)
+        (root / "config.toml").write_text(
+            '[paths]\ncorpus = "assets/corpus"\nmodels = "assets/models"\n'
+            'cache = "assets/cache"\nruns = "runs"\n'
+            '[model]\nteacher = "Qwen/Qwen3-0.6B"\n'
+            '[data]\nkind = "olmo"\ntrain_tokens = 101000000\n'
+            'eval_tokens = 1000000\n')
+
+        def files(overrides):
+            config = config_module.load(root / "config.toml", None, overrides)
+            return data.corpus_files(config)
+
+        array, note = files([])
+        assert array.name == "Qwen_Qwen3-0.6B-olmo-102M.npy", array.name
+        assert note.name == "Qwen_Qwen3-0.6B-olmo-102M.json", note.name
+
+        # A different source, size or teacher is a different corpus.
+        others = [files(["data.kind=fineweb"])[0],
+                  files(["data.train_tokens=500000000"])[0],
+                  files(["model.teacher=HuggingFaceTB/SmolLM2-135M"])[0]]
+        names = {array.name} | {o.name for o in others}
+        assert len(names) == 4, sorted(names)
+
+
 @case("an unfinished corpus hands back only what was written")
 def _partial_corpus():
     """The file is created at full length up front, so an interrupted fetch
