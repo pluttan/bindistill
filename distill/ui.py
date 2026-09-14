@@ -112,8 +112,13 @@ def table(rows: list[tuple], headers: tuple) -> None:
 class Progress:
     """Rewrites one line while work runs, without needing a dependency."""
 
-    def __init__(self, label: str, total: float):
+    def __init__(self, label: str, total: float, done: float = 0.0):
         self.label, self.total = label, max(1.0, float(total))
+        # Work carried over from an earlier run counts towards the bar but not
+        # towards the rate: dividing everything ever done by the seconds since
+        # this process started reports a speed nobody is running at, and then
+        # an hour of work left reads as one minute.
+        self.already = max(0.0, float(done))
         self.started = time.time()
         self.last = 0.0
 
@@ -124,7 +129,9 @@ class Progress:
         self.last = now
         share = min(1.0, done / self.total)
         elapsed = now - self.started
-        eta = elapsed / share - elapsed if share > 0.01 else 0.0
+        fresh = max(0.0, done - self.already)
+        rate = fresh / elapsed if elapsed > 1.0 else 0.0
+        eta = (self.total - done) / rate if rate > 0 else 0.0
         bar = "█" * int(share * 24) + "·" * (24 - int(share * 24))
         text = (f"  {self.label} {paint(bar, 'blue')} {share * 100:5.1f}%  "
                 f"{elapsed / 60:.0f}m elapsed, {eta / 60:.0f}m left")

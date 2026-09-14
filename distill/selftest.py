@@ -687,6 +687,30 @@ def _shard_retry():
                                                "document 9"]
 
 
+@case("time left is measured on this run, not on the whole file")
+def _progress_eta():
+    """Resuming a download that is already most of the way through, the bar
+    divided everything ever written by the seconds since start-up and
+    reported minutes where there were hours.
+    """
+    bar = ui.Progress("tokenising", 100.0, done=90.0)
+    bar.started -= 10.0            # ten seconds of this run
+    with contextlib.redirect_stdout(io.StringIO()) as printed:
+        bar.update(92.0, force=True)
+    text = printed.getvalue()
+
+    # Two units in ten seconds, eight to go: forty seconds, not none.
+    assert "1m left" in text, text
+
+    # Without the carried-over figure the same call is wildly optimistic,
+    # which is exactly the bug.
+    naive = ui.Progress("tokenising", 100.0)
+    naive.started -= 10.0
+    with contextlib.redirect_stdout(io.StringIO()) as printed:
+        naive.update(92.0, force=True)
+    assert "0m left" in printed.getvalue()
+
+
 @case("a half-finished download continues where it stopped")
 def _resume_cursors():
     """A note written by the one-shard-at-a-time filler has to mean the same

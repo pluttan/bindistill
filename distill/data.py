@@ -389,8 +389,8 @@ def build_corpus(config, tokenizer) -> Path:
     if eos is None:
         eos = 0
 
-    progress = ui.Progress("tokenising", target)
     written = int(note["written"])
+    progress = ui.Progress("tokenising", target, done=written)
     last_note, last_written = time.time(), written
     ui.detail(f"corpus file {array_path} target {target} tokens "
               f"({target * np.dtype(dtype).itemsize / 2 ** 30:.2f} GB), "

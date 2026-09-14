@@ -162,7 +162,12 @@ def load_tokenizer(config):
 
     from transformers import AutoTokenizer
 
-    return AutoTokenizer.from_pretrained(model_source(config))
+    tokenizer = AutoTokenizer.from_pretrained(model_source(config))
+    # A document longer than the context window is not a problem here: it is
+    # tokenised whole and then cut into windows. The warning says otherwise,
+    # once per long document, straight through the progress bar.
+    tokenizer.model_max_length = int(1e12)
+    return tokenizer
 
 
 # ==============================
