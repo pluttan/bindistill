@@ -260,7 +260,9 @@ def run(config, resume: bool = True) -> Path:
 
     asked = resolve_device(str(config.get("run.device", "auto")))
     device = rank_device(asked, local_rank, distributed)
-    if lead and device != asked:
+    # Only worth saying when a specific card was named and is being ignored.
+    # "cuda" with no index is not a request for card zero, it is no request.
+    if lead and device != asked and ":" in asked:
         ui.warn(f"{asked} was asked for, but this run spans {world} processes "
                 f"- each takes its own card, starting at cuda:0")
     kind = device_type(device)
