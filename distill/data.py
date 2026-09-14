@@ -395,6 +395,20 @@ def build_corpus(config, tokenizer) -> Path:
     ui.detail(f"corpus file {array_path} target {target} tokens "
               f"({target * np.dtype(dtype).itemsize / 2 ** 30:.2f} GB), "
               f"starting at {written}")
+    # Sources that are a list of shards can be read several at a time; a
+    # single local file or a parquet stream cannot, and stays as it was.
+    listing = {"olmo": _olmo_urls, "dolma": _dolma_urls}.get(kind)
+    if listing is not None and int(config.get("data.fetch_workers", 8)) > 1:
+        from . import parallel
+
+        written = parallel.fill(tokens, note, note_path, listing(config),
+                                config, tokenizer, eos, target, progress)
+        progress.done(f"{written / 1e6:.1f}M tokens")
+        if written < target:
+            ui.warn(f"stopped short of {target / 1e6:.1f}M; "
+                    f"run fetch again to continue")
+        return array_path
+
     try:
         for shard, row, texts in reader(config, int(note["shard"]), int(note["row"])):
             encoded = tokenizer(texts, add_special_tokens=False)["input_ids"]

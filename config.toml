@@ -53,6 +53,17 @@ timeout = 120
 # drops under load.
 workers = 4
 
+# How many corpus shards to read at once. Reading and decompressing is one
+# connection and the tokeniser only parallelises within a batch, so one shard
+# at a time leaves a large machine mostly idle. 1 goes back to sequential.
+fetch_workers = 8
+batch_documents = 256
+
+# Cores the tokeniser may use. 0 means half of what the machine has: its pool
+# would otherwise take every core, which is rude on a machine shared with
+# other work. Raise it when the box is yours alone.
+cpu_cores = 0
+
 [train]
 objective = "distill"   # distill = match a teacher; language = next token only
 seq = 1024

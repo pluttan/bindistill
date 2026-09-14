@@ -687,6 +687,37 @@ def _shard_retry():
                                                "document 9"]
 
 
+@case("a half-finished download continues where it stopped")
+def _resume_cursors():
+    """A note written by the one-shard-at-a-time filler has to mean the same
+    thing to the parallel one: hundreds of gigabytes already on disk must not
+    be fetched again.
+    """
+    from .parallel import restore_cursors
+
+    # The old shape: everything before shard 221 is done, and 221 is part way.
+    finished, cursors = restore_cursors(
+        {"written": 114_000_000_000, "shard": 221, "row": 3400})
+    assert finished == set(range(221))
+    assert cursors == {221: 3400}
+    assert 220 in finished and 221 not in finished
+
+    # A shard boundary: nothing part way through.
+    finished, cursors = restore_cursors({"shard": 7, "row": 0})
+    assert finished == set(range(7))
+    assert cursors == {}
+
+    # The new shape is read as written, gaps and all - a shard that failed
+    # stays unfinished and is picked up again.
+    finished, cursors = restore_cursors(
+        {"finished": [0, 1, 3], "cursors": {"2": 500, "4": 10}})
+    assert finished == {0, 1, 3}
+    assert cursors == {2: 500, 4: 10}
+
+    # Nothing at all means start from the beginning.
+    assert restore_cursors({}) == (set(), {})
+
+
 @case("each corpus gets its own file")
 def _corpus_names():
     """Teacher names carry dots, and with_suffix() truncates at the first one:

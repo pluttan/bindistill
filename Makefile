@@ -67,8 +67,15 @@ STOP_ARGS := $(if $(strip $(STOP)),--set train.min_improvement_per_hour=$(strip 
 # allenai/olmo-mix-1124. dclm is the web part and nearly all of the text.
 DATA    ?= olmo
 SUBSETS ?= ["dclm","pes2o","wiki","arxiv"]
+# How hard fetch leans on the machine. WORKERS is how many corpus shards are
+# read at once, CORES is the ceiling on the tokeniser's thread pool - it takes
+# every core otherwise, which is not neighbourly on a shared box.
+WORKERS ?=
+CORES   ?=
 DATA_ARGS := --set data.kind=$(strip $(DATA)) \
-             $(if $(strip $(SUBSETS)),--set 'data.subsets=$(strip $(SUBSETS))')
+             $(if $(strip $(SUBSETS)),--set 'data.subsets=$(strip $(SUBSETS))') \
+             $(if $(strip $(WORKERS)),--set data.fetch_workers=$(strip $(WORKERS))) \
+             $(if $(strip $(CORES)),--set data.cpu_cores=$(strip $(CORES)))
 FLAGS  := --preset $(CHOSEN) \
           $(if $(strip $(DEVICE)),--set run.device=$(strip $(DEVICE))) \
           $(STOP_ARGS) $(ARGS)

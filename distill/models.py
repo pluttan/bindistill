@@ -138,7 +138,28 @@ def model_source(config) -> str:
     return str(config.require("model.teacher"))
 
 
+def tokenizer_cores(config) -> int:
+    """How many cores the tokeniser may use.
+
+    Its thread pool takes every core on the machine by default, which is the
+    wrong thing to do on a shared one: it is not our machine to fill. Half is
+    a decent neighbour and still an order of magnitude more than one.
+    """
+    asked = int(config.get("data.cpu_cores", 0))
+    if asked > 0:
+        return asked
+    return max(1, (os.cpu_count() or 2) // 2)
+
+
 def load_tokenizer(config):
+    # The Rust tokeniser splits a batch across cores by itself, but
+    # transformers silences that the moment it suspects a fork, and then
+    # tokenising a terabyte runs on one core. Nothing here forks.
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "true")
+    # Read once, when the pool is built, so it has to be set before the
+    # tokeniser is imported - not after.
+    os.environ.setdefault("RAYON_NUM_THREADS", str(tokenizer_cores(config)))
+
     from transformers import AutoTokenizer
 
     return AutoTokenizer.from_pretrained(model_source(config))
