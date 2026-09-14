@@ -711,6 +711,81 @@ def _progress_eta():
     assert "0m left" in printed.getvalue()
 
 
+@case("workers really are separate processes")
+def _parallel_fill():
+    """The filler end to end, with the network and the tokeniser replaced.
+
+    Threads could not use this machine: the tokeniser's pool stops scaling
+    past a few cores and everything around it holds the GIL. This checks the
+    process version writes the right tokens, in the right amount, and records
+    where each shard was left.
+    """
+    import json
+    import os
+
+    import numpy as np
+
+    from . import data, parallel
+
+    if parallel.start_method() != "fork":
+        return  # the stand-ins below are inherited, which needs fork
+
+    with tempfile.TemporaryDirectory() as folder:
+        root = Path(folder)
+        (root / "config.toml").write_text(
+            '[paths]\ncorpus = "c"\nmodels = "m"\ncache = "k"\nruns = "r"\n'
+            '[model]\nteacher = "x/y"\n[data]\nkind = "olmo"\n'
+            'fetch_workers = 3\ncpu_cores = 3\nbatch_documents = 2\n')
+        from . import config as config_module
+        config = config_module.load(root / "config.toml", None, [])
+
+        # Four shards of four documents; document N of shard S is one token.
+        def lines(url):
+            shard = int(url.rsplit("-", 1)[1])
+            for i in range(4):
+                yield json.dumps({"text": f"{shard}:{i}"}).encode()
+
+        class Tokeniser:
+            def __call__(self, texts, add_special_tokens=False):
+                return {"input_ids": [[int(t.split(":")[0]) + 1]
+                                      for t in texts]}
+
+        original_lines = data._shard_lines
+        from . import models
+        original_loader = models.load_tokenizer
+        data._shard_lines = lambda url, timeout: lines(url)
+        models.load_tokenizer = lambda config: Tokeniser()
+        try:
+            urls = [f"https://example/data/dclm/shard-{i}" for i in range(4)]
+            target = 40
+            array_path = root / "corpus.npy"
+            tokens = np.lib.format.open_memmap(
+                array_path, mode="w+", dtype=np.uint32, shape=(target,))
+            note = {"written": 0, "shard": 0, "row": 0, "target": target}
+            bar = ui.Progress("t", target)
+            with contextlib.redirect_stdout(io.StringIO()):
+                written = parallel.fill(tokens, note, root / "note.json", urls,
+                                        config, Tokeniser(), 0, target, bar)
+        finally:
+            data._shard_lines = original_lines
+            models.load_tokenizer = original_loader
+
+    # Four documents and a separator each, four shards: thirty two tokens.
+    assert written == 32, written
+    values = np.asarray(tokens[:written]).tolist()
+    # Every shard contributed all four of its documents, none of them twice.
+    for shard in range(4):
+        assert values.count(shard + 1) == 4, (shard, values)
+    assert values.count(0) == 16, values
+
+    # And every shard is recorded as finished, or it would be read again on
+    # the next run: the end-of-shard mark travels through a feeder thread and
+    # is easy to lose at shutdown.
+    assert sorted(note["finished"]) == [0, 1, 2, 3], note["finished"]
+    assert not note["cursors"], note["cursors"]
+    assert note["written"] == 32
+
+
 @case("a half-finished download continues where it stopped")
 def _resume_cursors():
     """A note written by the one-shard-at-a-time filler has to mean the same

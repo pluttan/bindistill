@@ -53,15 +53,17 @@ timeout = 120
 # drops under load.
 workers = 4
 
-# How many corpus shards to read at once. Reading and decompressing is one
-# connection and the tokeniser only parallelises within a batch, so one shard
-# at a time leaves a large machine mostly idle. 1 goes back to sequential.
+# How many corpus shards to read at once, each in its own process. Threads do
+# not work here: the tokeniser's pool stops scaling past a few cores (measured
+# on a 256-thread machine: 4 cores 2.05M tokens/s, 64 cores 5.99M) and
+# everything around it holds the GIL. Small pools in several processes beat
+# one large pool by a wide margin. 1 goes back to reading one shard at a time.
 fetch_workers = 8
 batch_documents = 256
 
-# Cores the tokeniser may use. 0 means half of what the machine has: its pool
-# would otherwise take every core, which is rude on a machine shared with
-# other work. Raise it when the box is yours alone.
+# Cores for tokenising, in total across the workers - each gets this divided
+# by fetch_workers. 0 means half of what the machine has: taking every core is
+# rude on a machine shared with other work.
 cpu_cores = 0
 
 [train]
