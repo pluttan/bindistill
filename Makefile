@@ -72,7 +72,12 @@ SUBSETS ?= ["dclm","pes2o","wiki","arxiv"]
 # every core otherwise, which is not neighbourly on a shared box.
 WORKERS ?=
 CORES   ?=
+# TOKENS is the size of the corpus to build, and it is part of the corpus file
+# name - so every command that touches the corpus needs the same value. Pass it
+# once here rather than repeating --set in each invocation.
+TOKENS  ?=
 DATA_ARGS := --set data.kind=$(strip $(DATA)) \
+             $(if $(strip $(TOKENS)),--set data.train_tokens=$(strip $(TOKENS))) \
              $(if $(strip $(SUBSETS)),--set 'data.subsets=$(strip $(SUBSETS))') \
              $(if $(strip $(WORKERS)),--set data.fetch_workers=$(strip $(WORKERS))) \
              $(if $(strip $(CORES)),--set data.cpu_cores=$(strip $(CORES)))
