@@ -213,6 +213,11 @@ def describe_environment(config) -> None:
             ui.detail(f"{name} {getattr(module, '__version__', '?')}")
         except Exception as problem:  # noqa: BLE001 - absence is the answer
             ui.detail(f"{name} missing ({problem})")
+    from distill import data
+
+    token = data.hub_token()
+    ui.detail(f"hub token {'present' if token else 'MISSING - anonymous '
+                                                  'downloads are throttled'}")
     for name in ("HF_HOME", "HF_HUB_CACHE", "HF_HUB_DOWNLOAD_TIMEOUT",
                  "HF_HUB_OFFLINE", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY"):
         if os.environ.get(name):

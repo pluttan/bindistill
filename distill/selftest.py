@@ -775,6 +775,43 @@ def _corpus_names():
         assert len(names) == 4, sorted(names)
 
 
+@case("corpus requests carry the hub token")
+def _hub_token():
+    """Shards are fetched with plain urllib, which knows nothing about the
+    login the rest of the tooling uses - and the hub throttles anonymous
+    downloads, which is invisible except as a slow fetch.
+    """
+    import os
+
+    from . import data
+
+    keep = {name: os.environ.get(name) for name in
+            ("HF_TOKEN", "HUGGINGFACE_HUB_TOKEN", "HUGGING_FACE_HUB_TOKEN")}
+    try:
+        for name in keep:
+            os.environ.pop(name, None)
+        os.environ["HF_TOKEN"] = "hf_secret"
+
+        hub = data.request_headers(
+            "https://huggingface.co/datasets/allenai/olmo-mix-1124/x.gz")
+        assert hub["Authorization"] == "Bearer hf_secret"
+
+        # Only to the hub: a token must not be handed to any other host.
+        other = data.request_headers("https://olmo-data.org/dolma/x.gz")
+        assert "Authorization" not in other, other
+        assert other["User-Agent"] == "bindistill"
+
+        os.environ["HF_TOKEN"] = "  hf_padded  "
+        assert data.request_headers("https://huggingface.co/x")[
+            "Authorization"] == "Bearer hf_padded"
+    finally:
+        for name, value in keep.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
 @case("a lost counter is recovered from the corpus itself")
 def _recover_counter():
     """The note is small and rewritten constantly; an interrupt during the

@@ -184,6 +184,33 @@ def _dolma_urls(config) -> list[str]:
     return urls
 
 
+def hub_token() -> str | None:
+    """The HuggingFace token, from the environment or from a hub login.
+
+    Anonymous requests get lower rate limits and less bandwidth - the hub says
+    so itself - and we fetch shards with plain urllib, which knows nothing
+    about the login the rest of the tooling uses.
+    """
+    for name in ("HF_TOKEN", "HUGGINGFACE_HUB_TOKEN", "HUGGING_FACE_HUB_TOKEN"):
+        value = os.environ.get(name)
+        if value:
+            return value.strip()
+    try:
+        from huggingface_hub import get_token
+
+        return get_token()
+    except Exception:  # noqa: BLE001 - no hub, or no login
+        return None
+
+
+def request_headers(url: str) -> dict:
+    headers = {"User-Agent": "bindistill"}
+    token = hub_token() if "huggingface.co" in url else None
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
 def _shard_lines(url: str, timeout: float):
     """The decompressed lines of one remote file.
 
@@ -194,7 +221,7 @@ def _shard_lines(url: str, timeout: float):
     import io as io_module
     import urllib.request
 
-    request = urllib.request.Request(url, headers={"User-Agent": "bindistill"})
+    request = urllib.request.Request(url, headers=request_headers(url))
     with urllib.request.urlopen(request, timeout=timeout) as response:
         if url.endswith((".zst", ".zstd")):
             try:
@@ -272,7 +299,7 @@ def check_reachable(url: str, timeout: float = 20.0) -> str | None:
     import urllib.request
 
     request = urllib.request.Request(url, method="HEAD",
-                                     headers={"User-Agent": "bindistill"})
+                                     headers=request_headers(url))
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             code = getattr(response, "status", 200)
