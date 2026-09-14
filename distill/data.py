@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 import time
 from pathlib import Path
 
@@ -30,6 +31,52 @@ NETWORK_TROUBLE = (OSError, EOFError, http.client.HTTPException)
 # ==============================
 # ===  Layout                ===
 # ==============================
+
+def write_note(note_path: Path, note: dict) -> None:
+    """Replace the note in one step.
+
+    write_text truncates first and writes after, so an interrupt in between
+    leaves an empty file - and the next run cannot tell how much of a corpus
+    that is hundreds of gigabytes long has already been written.
+    """
+    temporary = note_path.with_name(note_path.name + ".new")
+    temporary.write_text(json.dumps(note, indent=2))
+    os.replace(temporary, note_path)
+
+
+def read_note(note_path: Path) -> dict | None:
+    """The note, or None when it is missing or was left half-written."""
+    if not note_path.exists():
+        return None
+    try:
+        return json.loads(note_path.read_text())
+    except ValueError:
+        ui.warn(f"{note_path.name} is unreadable - it was probably cut short "
+                f"by an interrupted run")
+        return None
+
+
+def written_tokens(array_path: Path, block: int = 1 << 20) -> int:
+    """Where the written part of a corpus ends, read from the file itself.
+
+    The file is created at full length and filled from the front, so the tail
+    is zeros. A binary search over blocks finds the boundary in a few dozen
+    reads rather than a scan of a terabyte.
+    """
+    tokens = np.load(array_path, mmap_mode="r")
+    low, high = 0, len(tokens)
+    if high == 0 or not np.any(np.asarray(tokens[:min(block, high)])):
+        return 0
+    while high - low > block:
+        middle = (low + high) // 2
+        if np.any(np.asarray(tokens[middle:middle + block])):
+            low = middle
+        else:
+            high = middle
+    tail = np.asarray(tokens[low:low + block])
+    filled = np.nonzero(tail)[0]
+    return int(low + filled[-1] + 1) if len(filled) else int(low)
+
 
 def corpus_name(config) -> str:
     teacher = str(config.require("model.teacher")).replace("/", "_")
@@ -360,7 +407,18 @@ def build_corpus(config, tokenizer) -> Path:
             "dtype": np.dtype(dtype).name,
             "teacher": config.require("model.teacher")}
     if note_path.exists() and array_path.exists():
-        stored = json.loads(note_path.read_text())
+        stored = read_note(note_path)
+        if stored is None:
+            # The tokens are still there; only the counter was lost. Finding
+            # where they end beats fetching hundreds of gigabytes again.
+            recovered = written_tokens(array_path)
+            if recovered > 0:
+                ui.good(f"recovered {recovered / 1e6:.1f}M tokens from the "
+                        f"corpus itself")
+            stored = {"written": recovered, "shard": 0, "row": 0,
+                      "target": target, "dtype": note["dtype"],
+                      "teacher": note["teacher"]}
+            write_note(note_path, stored)
         if stored.get("target") == target and stored.get("dtype") == note["dtype"]:
             note = stored
             if 0 < note["written"] < target:
@@ -420,7 +478,7 @@ def build_corpus(config, tokenizer) -> Path:
                 tokens[written:written + room] = piece[:room]
                 written += room
             note.update({"written": written, "shard": shard, "row": row})
-            note_path.write_text(json.dumps(note, indent=2))
+            write_note(note_path, note)
             progress.update(written)
             now = time.time()
             if now - last_note >= 60:
@@ -433,7 +491,7 @@ def build_corpus(config, tokenizer) -> Path:
     finally:
         tokens.flush()
         note.update({"written": written})
-        note_path.write_text(json.dumps(note, indent=2))
+        write_note(note_path, note)
 
     progress.done(f"{written / 1e6:.1f}M tokens")
     if written < target:

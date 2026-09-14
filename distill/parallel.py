@@ -84,6 +84,8 @@ def fill(tokens, note: dict, note_path, urls: list[str], config, tokenizer,
     running out of shards, or on an interruption, all of which leave the note
     consistent with what is actually on disk.
     """
+    from . import data
+
     workers = max(1, int(config.get("data.fetch_workers", 8)))
     batches = max(16, int(config.get("data.batch_documents", 256)))
     written = int(note["written"])
@@ -139,7 +141,7 @@ def fill(tokens, note: dict, note_path, urls: list[str], config, tokenizer,
                          "cursors": {str(k): v for k, v in cursors.items()},
                          # Kept so an older build can still read this note.
                          "shard": min(pending, default=0), "row": 0})
-            note_path.write_text(json.dumps(note, indent=2))
+            data.write_note(note_path, note)
             progress.update(written)
 
             now = time.time()
@@ -161,6 +163,6 @@ def fill(tokens, note: dict, note_path, urls: list[str], config, tokenizer,
             thread.join(timeout=2.0)
         tokens.flush()
         note.update({"written": written})
-        note_path.write_text(json.dumps(note, indent=2))
+        data.write_note(note_path, note)
 
     return written

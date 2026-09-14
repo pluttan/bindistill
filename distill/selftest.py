@@ -775,6 +775,40 @@ def _corpus_names():
         assert len(names) == 4, sorted(names)
 
 
+@case("a lost counter is recovered from the corpus itself")
+def _recover_counter():
+    """The note is small and rewritten constantly; an interrupt during the
+    write leaves it empty. The tokens are still there, and finding where they
+    end beats fetching hundreds of gigabytes a second time.
+    """
+    import numpy as np
+
+    from .data import read_note, write_note, written_tokens
+
+    with tempfile.TemporaryDirectory() as folder:
+        root = Path(folder)
+        array_path = root / "corpus.npy"
+        for real in (0, 1, 5_000_000):
+            array = np.zeros(8_000_000, dtype=np.uint32)
+            array[:real] = np.arange(1, real + 1, dtype=np.uint32)
+            np.save(array_path, array)
+            assert written_tokens(array_path) == real, real
+
+        # A note cut short reads as absent, not as a crash.
+        note_path = root / "corpus.json"
+        note_path.write_text("")
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert read_note(note_path) is None
+        note_path.write_text('{"written": 5, "tar')
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert read_note(note_path) is None
+
+        # And writing it leaves no half-written state behind.
+        write_note(note_path, {"written": 7})
+        assert read_note(note_path) == {"written": 7}
+        assert not list(root.glob("*.new"))
+
+
 @case("an unfinished corpus hands back only what was written")
 def _partial_corpus():
     """The file is created at full length up front, so an interrupted fetch
