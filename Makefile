@@ -130,7 +130,7 @@ selftest:
 	$(PY) main.py selftest
 
 status:
-	$(PY) main.py status $(FLAGS)
+	$(PY) main.py status $(FLAGS) $(DATA_ARGS)
 
 # Needs a network. Puts the teacher and the corpus inside this folder.
 fetch:
@@ -166,7 +166,7 @@ train-multi: train
 
 # Prove the folder works with the network unplugged.
 offline:
-	HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 $(PY) main.py status $(FLAGS)
+	HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 $(PY) main.py status $(FLAGS) $(DATA_ARGS)
 
 clean:
 	rm -rf $(VENV) __pycache__ distill/__pycache__ *.pyc
