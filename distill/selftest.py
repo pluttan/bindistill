@@ -340,6 +340,40 @@ def _dolma_subsets():
             raise AssertionError("an unknown subset was accepted")
 
 
+@case("resuming counts tokens, at whatever the step size turns out to be")
+def _resume_arithmetic():
+    """A step is worth different numbers of tokens on different machines,
+    because the micro-batch is probed per card. Both ends of the loop are
+    counted in steps, so both have to be derived from tokens after that probe
+    - and getting only one of them right is worse than getting neither.
+    """
+    def plan(seen, micro, accum=8, seq=1024, world=2, budget=10_000_000_000):
+        per_step = micro * accum * seq * world
+        return seen // per_step, max(1, budget // per_step), per_step
+
+    # The real case: 300M tokens done, probed at 32 where the last machine
+    # managed 1. Two thirds of the budget must still be ahead.
+    start, total, per_step = plan(300_000_000, 32)
+    assert start == 572, start
+    assert total == 19073, total
+    left = (total - start) * per_step
+    assert left > 9_000_000_000, left
+
+    # Taking the start from a step size of 1 - the value before the probe -
+    # is what ended a ten billion token run after four hundred million.
+    stale, _, _ = plan(300_000_000, 1)
+    assert stale == 18310, stale
+    assert (total - stale) * per_step < 500_000_000
+
+    # A fresh run starts at zero however the probe lands.
+    for micro in (1, 4, 32):
+        assert plan(0, micro)[0] == 0
+
+    # And a budget already spent leaves nothing to do, rather than wrapping.
+    start, total, _ = plan(10_000_000_000, 32)
+    assert start >= total
+
+
 @case("learning rate warms up then decays")
 def _schedule():
     from .train import learning_rate_factor

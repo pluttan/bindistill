@@ -421,8 +421,15 @@ def run(config, resume: bool = True) -> Path:
         micro = fit_micro_batch(trial, 1, 32, kind)
         per_step = micro * accum * seq * world
         total_steps = max(1, budget_tokens // per_step)
+        # Both ends of the loop are counted in steps but decided in tokens, so
+        # both have to be redone once the step size is known. Leaving the start
+        # behind was a budget of ten billion tokens finishing after four
+        # hundred million: the resumed position had been worked out when a
+        # step was thirty two times smaller.
+        start_step = seen // per_step
         if lead:
-            ui.good(f"micro-batch fitted to {micro}")
+            ui.good(f"micro-batch fitted to {micro}, resuming at step "
+                    f"{start_step} of {total_steps}")
 
     if lead:
         ui.field("tokens per step", f"{per_step / 1e3:.1f}k")
