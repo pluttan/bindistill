@@ -215,15 +215,43 @@ def restore_default_rope() -> list[str]:
         def routine(config, device=None, seq_len=None, **kwargs):
             import torch
 
+            base, turn = rope_settings(config)
             width = getattr(config, "head_dim", None) or (
                 config.hidden_size // config.num_attention_heads)
-            turning = int(width * getattr(config, "partial_rotary_factor", 1.0))
+            turning = int(width * turn)
             steps = torch.arange(0, turning, 2, dtype=torch.int64).to(
                 device=device, dtype=torch.float)
-            return 1.0 / (config.rope_theta ** (steps / turning)), 1.0
+            return 1.0 / (base ** (steps / turning)), 1.0
 
     rope.ROPE_INIT_FUNCTIONS["default"] = routine
     return ["ROPE_INIT_FUNCTIONS['default']"]
+
+
+def rope_settings(config) -> tuple[float, float]:
+    """The base and the rotary factor, wherever this version keeps them.
+
+    They used to be plain attributes of the config. Now they live in a
+    dictionary, which may itself be keyed by layer type, and reading the old
+    attribute raises rather than returning nothing. All three places are tried
+    before falling back to the value that was the default when the model was
+    written.
+    """
+    holder = getattr(config, "rope_parameters", None)
+    if isinstance(holder, dict):
+        if "rope_theta" in holder:
+            return float(holder["rope_theta"]), float(
+                holder.get("partial_rotary_factor", 1.0))
+        for value in holder.values():
+            if isinstance(value, dict) and "rope_theta" in value:
+                return float(value["rope_theta"]), float(
+                    value.get("partial_rotary_factor", 1.0))
+
+    try:
+        written = config.to_dict()
+    except Exception:  # noqa: BLE001 - fall back to the raw namespace
+        written = dict(getattr(config, "__dict__", {}))
+    base = written.get("rope_theta") or written.get("theta") or 10000.0
+    return float(base), float(written.get("partial_rotary_factor", 1.0))
 
 
 def build_published(config, device: str):
