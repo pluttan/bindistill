@@ -58,6 +58,13 @@ def build_parser() -> argparse.ArgumentParser:
     profile.add_argument("--checkpoint", default=None)
     add_common(profile, subcommand=True)
 
+    footprint = sub.add_parser(
+        "footprint", help="what the compression is worth, end to end")
+    footprint.add_argument("--checkpoint", default=None)
+    footprint.add_argument("--no-speed", action="store_true",
+                           help="size only, skip the generation timing")
+    add_common(footprint, subcommand=True)
+
     bench = sub.add_parser(
         "bench", help="multiple-choice tasks, every model side by side")
     bench.add_argument("--checkpoint", default=None)
@@ -203,6 +210,14 @@ def command_profile(config, given: str | None) -> int:
     return 0
 
 
+def command_footprint(config, args) -> int:
+    from distill import footprint
+
+    footprint.run(config, resolve_checkpoint(config, args.checkpoint),
+                  speed=not args.no_speed)
+    return 0
+
+
 def command_bench(config, args) -> int:
     from distill import bench
 
@@ -298,6 +313,8 @@ def main(argv: list[str] | None = None) -> int:
         return command_eval(config, args.checkpoint)
     if args.command == "profile":
         return command_profile(config, args.checkpoint)
+    if args.command == "footprint":
+        return command_footprint(config, args)
     if args.command == "bench":
         return command_bench(config, args)
     if args.command == "export":

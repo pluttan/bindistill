@@ -397,6 +397,38 @@ def _closeness_metrics():
         scores["teacher_choice_probability"]
 
 
+@case("the compression ratio is quoted over the whole model")
+def _footprint_arithmetic():
+    """Sixteen to one holds for a weight inside a block, not for the model.
+
+    The embedding table, the output head and the norms are never binarised, and
+    in a small model they are a quarter of the weights. Quoting the per-weight
+    ratio for the model overstates it by four times, which is the kind of claim
+    a reviewer checks first.
+    """
+    from . import footprint
+
+    # One bit per weight plus one half-precision scale per group of 128.
+    assert footprint.group_bytes(128, 128) == 16 + 2
+    # A partial group still costs a whole scale, a partial byte a whole byte.
+    assert footprint.group_bytes(1, 128) == 1 + 2
+    assert footprint.group_bytes(129, 128) == 17 + 4
+
+    # The real shape of Qwen3-0.6B: 440.4M weights in blocks out of 599.5M.
+    split = {"binary_weights": 440_400_000,
+             "full_weights": 599_500_000 - 440_400_000,
+             "scale_values": 440_400_000 // 128, "group": 128, "parts": {}}
+    priced = footprint.price(split)
+
+    # 1 + 16/128 bits per weight is 14.22 times smaller than 16 bits.
+    assert 14.1 < priced["blocks_only_ratio"] < 14.3, priced
+    # End to end it is a little over three, because a quarter of the weights
+    # never shrank.
+    assert 3.0 < priced["whole_model_ratio"] < 3.3, priced
+    assert 0.26 < priced["full_precision_share"] < 0.27, priced
+    assert priced["whole_model_ratio"] < priced["blocks_only_ratio"] / 4
+
+
 @case("benchmark scores are read out of whatever the harness returns")
 def _bench_parsing():
     """The harness names its metrics by the filter that produced them.
