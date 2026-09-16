@@ -198,7 +198,8 @@ def build_published(config, device: str):
     """
     import torch
     import transformers
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+    from transformers import (AutoConfig, AutoModelForCausalLM,
+                              AutoTokenizer)
 
     name = str(config.get("bench.published", "deepgrove/Bonsai"))
     restored = restore_removed_names()
@@ -206,23 +207,55 @@ def build_published(config, device: str):
         ui.detail(f"transformers {transformers.__version__}: supplied "
                   f"{', '.join(restored)} for the published model's own code")
 
-    # The attention implementation is named explicitly because the model's own
-    # code looks it up in a dictionary of the library's own functions, and the
-    # value the library now defaults to is not a key in it. Asking for one the
-    # code was written against is enough; the arithmetic is the same either
-    # way, only the kernel differs.
+    # The attention implementation has to be named explicitly. The model's own
+    # code looks it up in a table of the library's functions, and the value the
+    # library now defaults to is not a key in that table. Asking through the
+    # loader is tried first, then through the config, because which of the two
+    # wins has changed between versions.
     model = None
     problems = []
-    for how in ("eager", "sdpa"):
+    for how, through_config in (("eager", False), ("eager", True),
+                                ("sdpa", True)):
         try:
-            model = AutoModelForCausalLM.from_pretrained(
-                name, trust_remote_code=True, dtype=torch.bfloat16,
-                attn_implementation=how)
+            if through_config:
+                settings = AutoConfig.from_pretrained(name,
+                                                      trust_remote_code=True)
+                settings._attn_implementation = how
+                model = AutoModelForCausalLM.from_pretrained(
+                    name, config=settings, trust_remote_code=True,
+                    dtype=torch.bfloat16)
+            else:
+                model = AutoModelForCausalLM.from_pretrained(
+                    name, trust_remote_code=True, dtype=torch.bfloat16,
+                    attn_implementation=how)
             break
-        except Exception as problem:  # noqa: BLE001 - try the next one
-            problems.append(f"{how}: {problem}")
+        except Exception as problem:  # noqa: BLE001 - try the next way in
+            import traceback
+
+            frames = traceback.extract_tb(problem.__traceback__)
+            spot = ""
+            if frames:
+                spot = (f" raised at {Path(frames[-1].filename).name}:"
+                        f"{frames[-1].lineno} in {frames[-1].name}")
+            problems.append(f"[{how}"
+                            f"{', via config' if through_config else ''}] "
+                            f"{type(problem).__name__}: {problem}{spot}")
     if model is None:
-        raise RuntimeError("; ".join(problems))
+        raise RuntimeError(" | ".join(problems))
+
+    # Its layers read the setting during the forward pass, not at load time,
+    # and each one keeps its own reference to a config object. Setting it in
+    # one place is not enough if another holds a copy.
+    settled = 0
+    for module in model.modules():
+        holder = getattr(module, "config", None)
+        if holder is not None and getattr(
+                holder, "_attn_implementation", None) == "default":
+            holder._attn_implementation = "eager"
+            settled += 1
+    if settled:
+        ui.detail(f"attention set to eager on {settled} modules that still "
+                  f"held the library's placeholder")
 
     model.to(device)
     tokenizer = AutoTokenizer.from_pretrained(name, trust_remote_code=True)
