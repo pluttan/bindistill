@@ -58,6 +58,19 @@ def build_parser() -> argparse.ArgumentParser:
     profile.add_argument("--checkpoint", default=None)
     add_common(profile, subcommand=True)
 
+    bench = sub.add_parser(
+        "bench", help="multiple-choice tasks, every model side by side")
+    bench.add_argument("--checkpoint", default=None)
+    bench.add_argument("--hours", type=float, default=18.0,
+                       help="stop starting new models after this long")
+    bench.add_argument("--limit", type=float, default=None,
+                       help="examples per task; a few is a dry run")
+    bench.add_argument("--core-only", action="store_true",
+                       help="leave out the expensive wide task")
+    bench.add_argument("--only", default=None,
+                       help="comma-separated subset of the models")
+    add_common(bench, subcommand=True)
+
     export = sub.add_parser("export", help="write the trained model out")
     export.add_argument("--checkpoint", default=None)
     export.add_argument("--out", default=None)
@@ -190,6 +203,17 @@ def command_profile(config, given: str | None) -> int:
     return 0
 
 
+def command_bench(config, args) -> int:
+    from distill import bench
+
+    # A missing checkpoint is not fatal here: the other rows still measure.
+    found = resolve_checkpoint(config, args.checkpoint)
+    only = [p.strip() for p in args.only.split(",")] if args.only else None
+    bench.run(config, found, hours=args.hours, limit=args.limit,
+              wide=not args.core_only, only=only)
+    return 0
+
+
 def command_export(config, given: str | None, out: str | None) -> int:
     from distill import export
 
@@ -274,6 +298,8 @@ def main(argv: list[str] | None = None) -> int:
         return command_eval(config, args.checkpoint)
     if args.command == "profile":
         return command_profile(config, args.checkpoint)
+    if args.command == "bench":
+        return command_bench(config, args)
     if args.command == "export":
         return command_export(config, args.checkpoint, args.out)
     return 1

@@ -14,3 +14,12 @@ huggingface_hub>=0.24
 numpy>=1.26
 pyarrow>=16
 zstandard>=0.22
+
+# The task benchmarks (`make bench`) need three more packages, installed by
+# `make bench-install` rather than from here: the harness carries a large
+# dependency tree and pinning it next to torch is how a working environment
+# gets broken the night before it is needed.
+#
+#   lm_eval>=0.4.3   the harness itself
+#   bitsandbytes     the 4-bit row
+#   accelerate       device placement for the quantised model

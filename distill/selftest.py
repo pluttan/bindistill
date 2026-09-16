@@ -397,6 +397,43 @@ def _closeness_metrics():
         scores["teacher_choice_probability"]
 
 
+@case("benchmark scores are read out of whatever the harness returns")
+def _bench_parsing():
+    """The harness names its metrics by the filter that produced them.
+
+    Keys come back as `acc_norm,none` rather than `acc_norm`, and which of the
+    two a task offers depends on the task. Reading a fixed key gives an empty
+    table and a night of machine time with nothing to show for it.
+    """
+    from . import bench
+
+    block = {
+        "arc_challenge": {"acc,none": 0.30, "acc_norm,none": 0.33,
+                          "acc_stderr,none": 0.01},
+        "piqa": {"acc,none": 0.70},
+        "winogrande": {"acc": 0.55},
+        "broken": {"alias": "broken"},
+    }
+    scores = bench.collect({"results": block})
+
+    # Normalised accuracy wins where a task reports both.
+    assert scores["arc_challenge"] == 0.33, scores
+    assert scores["piqa"] == 0.70, scores
+    assert scores["winogrande"] == 0.55, scores
+    assert "broken" not in scores, scores
+    assert bench.pick_score({"acc_stderr,none": 0.01}) is None
+
+    # Asking for one wide task returns its aggregate and all of its parts;
+    # averaging over both would weigh that task by the number of its parts.
+    wide = bench.collect({"results": {
+        "mmlu": {"acc,none": 0.30},
+        "mmlu_anatomy": {"acc,none": 0.90},
+        "mmlu_astronomy": {"acc,none": 0.90},
+        "piqa": {"acc,none": 0.70},
+    }})
+    assert abs(bench.average(wide) - 0.50) < 1e-9, bench.average(wide)
+
+
 @case("the newest checkpoint is the one written last")
 def _checkpoint_order():
     """Step numbers are not comparable across runs of the same directory.

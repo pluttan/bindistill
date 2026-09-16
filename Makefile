@@ -88,7 +88,7 @@ FLAGS  := --preset $(CHOSEN) \
 TORCH_INDEX := $(if $(strip $(CUDA)),\
                  --index-url https://download.pytorch.org/whl/$(strip $(CUDA)))
 
-.PHONY: all update detect ensure install torch selftest status fetch train resume eval profile export smoke train-multi offline clean
+.PHONY: all update detect ensure install torch selftest status fetch train resume eval bench-install bench bench-check night profile export smoke train-multi offline clean
 
 # The whole thing: pick up the latest code, look at the hardware, install what
 # matches it, check the machinery, fetch a mixture of domains, and train. Safe
@@ -157,6 +157,49 @@ profile:
 
 export:
 	$(PY) main.py export $(FLAGS)
+
+# Multiple-choice tasks, every model on the same questions. HOURS caps how long
+# new models may be started; rows already measured are kept, so running this
+# again continues rather than repeats.
+HOURS ?= 18
+BENCH_ARGS := --hours $(HOURS) $(if $(CKPT),--checkpoint $(CKPT))
+# The night is split so the whole of it fits inside HOURS: training the second
+# architecture takes about an hour, its benchmarks get TINY_HOURS, and the main
+# model gets the rest. The published model is measured once, in the main pass -
+# it is the same model either way, and running it twice buys nothing.
+TINY_HOURS ?= 3
+MAIN_HOURS ?= $(shell expr $(HOURS) - $(TINY_HOURS) - 2)
+
+# Installed apart from the rest on purpose. The harness pulls a large
+# dependency tree and can move transformers or torch under a working
+# environment; only-if-needed keeps what is already installed. Run it, then run
+# `make status` to confirm torch still sees the cards.
+bench-install:
+	$(PIP) install --upgrade-strategy only-if-needed \
+	  "lm_eval>=0.4.3" bitsandbytes accelerate
+
+bench:
+	$(PY) main.py bench $(FLAGS) $(DATA_ARGS) $(BENCH_ARGS)
+
+# Two examples per task: proves every model builds, the harness runs and the
+# table prints, in minutes rather than hours. Run this before the night.
+bench-check:
+	$(PY) main.py bench $(FLAGS) $(DATA_ARGS) --limit 2 --core-only \
+	  $(if $(CKPT),--checkpoint $(CKPT))
+
+# The night: a second architecture trained from scratch, then every model
+# measured on the tasks. Sized to finish inside HOURS - the training takes a
+# couple of hours on one card and the benchmarks get what is left.
+night:
+	$(MAKE) selftest
+	$(PY) main.py fetch --preset tiny $(DATA_ARGS)
+	$(VISIBLE) PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+	  $(LAUNCH) main.py train --preset tiny $(DATA_ARGS)
+	$(PY) main.py eval --preset tiny $(DATA_ARGS)
+	$(PY) main.py bench --preset tiny $(DATA_ARGS) --hours $(TINY_HOURS) \
+	  --core-only --only teacher,student,int4,naive
+	$(PY) main.py bench $(FLAGS) $(DATA_ARGS) --hours $(MAIN_HOURS) \
+	  $(if $(CKPT),--checkpoint $(CKPT))
 
 # Full cycle on a small model: a rehearsal that the real run will work.
 smoke:

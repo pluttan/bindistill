@@ -109,6 +109,16 @@ checkpoint_every = 250
 keep_checkpoints = 3
 dataloader_workers = 2
 
+# Multiple-choice tasks. Accuracy here does not depend on the tokeniser, so
+# these are the only numbers that can be read against a published result from a
+# model with a different vocabulary.
+[bench]
+tasks = ["arc_challenge", "arc_easy", "hellaswag", "openbookqa", "piqa", "winogrande"]
+wide_tasks = ["mmlu"]   # fourteen thousand questions; costs more than the six above
+published = "deepgrove/Bonsai"
+batch_size = "auto"     # the harness sizes it to the card
+
+
 [eval]
 windows = 32            # held-out windows of `train.seq` tokens
 live_windows = 32       # windows for the checks printed during training
