@@ -340,6 +340,63 @@ def _dolma_subsets():
             raise AssertionError("an unknown subset was accepted")
 
 
+@case("closeness to the teacher is measured where the teacher was sure")
+def _closeness_metrics():
+    """A single top-1 rate hides the difference that matters.
+
+    Missing the teacher's choice on a token it was unsure about is cheap;
+    missing it where the teacher was certain is the damage. The same goes for
+    near misses: a choice pushed to second place and one dropped out of the
+    ranking entirely both count as one disagreement.
+    """
+    import torch
+
+    from . import evaluate
+
+    class Fixed:
+        """Stands in for a model: hands back the logits it was built with."""
+
+        def __init__(self, logits):
+            self.logits = logits
+
+        def __call__(self, ids):
+            return self
+
+        def eval(self):
+            return self
+
+        def train(self, mode=True):
+            return self
+
+        training = False
+
+    # Four positions. The teacher is certain about three of them; the student
+    # repeats one of those, misses one but keeps it within reach, and drops
+    # the last out of its top five altogether.
+    teacher = torch.tensor([[[9.0, 0, 0, 0, 0, 0],
+                             [8.0, 0, 0, 0, 0, 0],
+                             [0.6, 0.5, 0.4, 0, 0, 0],
+                             [0, 0, 0, 0, 0, 5.0]]])
+    student = torch.tensor([[[9.0, 0, 0, 0, 0, 0],
+                             [0, 0, 0, 0, 0, 9.0],
+                             [0, 9.0, 0, 0, 0, 0],
+                             [0, 1.0, 2.0, 3.0, 4.0, -9.0]]])
+    ids = torch.zeros((1, 4), dtype=torch.long)
+    gold = torch.zeros((1, 4), dtype=torch.long)
+
+    scores = evaluate.measure(Fixed(student), Fixed(teacher), ids, gold, "cpu",
+                              chunk=4)
+
+    assert abs(scores["agreement"] - 0.25) < 1e-6, scores["agreement"]
+    assert abs(scores["agreement_top5"] - 0.75) < 1e-6, scores["agreement_top5"]
+    assert abs(scores["certain_tokens"] - 0.75) < 1e-6, scores["certain_tokens"]
+    # One of the three certain positions was repeated.
+    assert abs(scores["agreement_when_certain"] - 1 / 3) < 1e-6, \
+        scores["agreement_when_certain"]
+    assert 0.24 < scores["teacher_choice_probability"] < 0.26, \
+        scores["teacher_choice_probability"]
+
+
 @case("the newest checkpoint is the one written last")
 def _checkpoint_order():
     """Step numbers are not comparable across runs of the same directory.
