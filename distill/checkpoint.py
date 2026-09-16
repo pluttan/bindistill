@@ -31,7 +31,22 @@ def _slots(run_dir: Path) -> list[Path]:
     sets the modification time, so it is exactly the moment the file became
     readable.
     """
-    return sorted(run_dir.glob("step*.pt"), key=lambda p: p.stat().st_mtime)
+    return sorted(run_dir.glob("step*.pt"),
+                  key=lambda p: (p.stat().st_mtime, _step_of(p)))
+
+
+def _step_of(path: Path) -> int:
+    """The number in the file name, or -1 if it does not carry one.
+
+    Only used to break ties: several checkpoints written in the same moment
+    share a modification time, and sorting on that alone leaves their order
+    undefined, which is enough to delete the wrong one. Within a single run the
+    numbers do increase, so they settle it correctly.
+    """
+    try:
+        return int(path.stem.replace("step", ""))
+    except ValueError:
+        return -1
 
 
 def latest(run_dir: Path) -> Path | None:

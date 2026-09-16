@@ -495,6 +495,24 @@ def _checkpoint_order():
         kept = checkpoint._slots(run_dir)[-1:]
         assert kept == [fresh], kept
 
+    # Several checkpoints written in one moment share a modification time to
+    # whatever precision the filesystem keeps, and ordering on time alone
+    # leaves them in no particular order - enough to delete the wrong one. The
+    # step number settles it, which is correct inside a single run.
+    import os
+
+    with tempfile.TemporaryDirectory() as room:
+        run_dir = Path(room)
+        stamp = clock.time()
+        for step in (10, 20, 30, 40):
+            written = run_dir / f"step{step}.pt"
+            written.write_bytes(b"same moment")
+            os.utime(written, (stamp, stamp))
+
+        assert checkpoint.latest(run_dir).name == "step40.pt"
+        keeping_two = [p.name for p in checkpoint._slots(run_dir)[-2:]]
+        assert keeping_two == ["step30.pt", "step40.pt"], keeping_two
+
 
 @case("resuming counts tokens, at whatever the step size turns out to be")
 def _resume_arithmetic():
