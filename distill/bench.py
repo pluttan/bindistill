@@ -187,7 +187,43 @@ def restore_removed_names() -> list[str]:
 
         utils.LossKwargs = LossKwargs
         restored.append("LossKwargs")
+
+    restored += restore_default_rope()
     return restored
+
+
+def restore_default_rope() -> list[str]:
+    """Put back the unscaled entry in the table of position encodings.
+
+    A model without rope scaling asks this table for `default`, and the
+    library no longer has that key: what is left is the scaled variants. The
+    entry is restored rather than the model patched, because the model's file
+    holds the table by reference and every layer reads it at construction.
+
+    The library's own unscaled routine is reused if it is still there under its
+    private name. Only if it is gone is one written out, and it is written out
+    plainly: the inverse frequencies of ordinary rotary encoding, the formula
+    that has not changed since it was introduced.
+    """
+    from transformers import modeling_rope_utils as rope
+
+    if "default" in rope.ROPE_INIT_FUNCTIONS:
+        return []
+
+    routine = getattr(rope, "_compute_default_rope_parameters", None)
+    if routine is None:
+        def routine(config, device=None, seq_len=None, **kwargs):
+            import torch
+
+            width = getattr(config, "head_dim", None) or (
+                config.hidden_size // config.num_attention_heads)
+            turning = int(width * getattr(config, "partial_rotary_factor", 1.0))
+            steps = torch.arange(0, turning, 2, dtype=torch.int64).to(
+                device=device, dtype=torch.float)
+            return 1.0 / (config.rope_theta ** (steps / turning)), 1.0
+
+    rope.ROPE_INIT_FUNCTIONS["default"] = routine
+    return ["ROPE_INIT_FUNCTIONS['default']"]
 
 
 def build_published(config, device: str):
