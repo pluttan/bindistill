@@ -585,7 +585,13 @@ def quick_eval(config, student, teacher, device: str, chunk: int) -> dict:
     """A cheap held-out check during training; the full table is `make eval`."""
     from . import evaluate
 
-    windows = min(8, int(config.get("eval.windows", 32)))
+    # Eight windows is eight thousand tokens, and a perplexity read off that
+    # little text moves by whole points between checks for no reason except
+    # which text the windows landed on: one run printed 36.63 and then 38.26
+    # while the training loss fell the whole way between them. A check nobody
+    # can believe is worse than no check, and reading the full set costs a
+    # couple of seconds once every `eval_every` steps.
+    windows = int(config.get("eval.live_windows", 32))
     inputs, targets = data.held_out_windows(config, windows)
     was_training = student.training
     scores = evaluate.measure(student, teacher, inputs, targets, device, chunk)

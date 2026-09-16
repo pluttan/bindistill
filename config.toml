@@ -111,6 +111,7 @@ dataloader_workers = 2
 
 [eval]
 windows = 32            # held-out windows of `train.seq` tokens
+live_windows = 32       # windows for the checks printed during training
 baselines = true        # measure the teacher and the untrained binarisation too
 
 
