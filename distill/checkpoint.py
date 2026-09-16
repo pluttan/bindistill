@@ -19,8 +19,19 @@ from . import ui
 
 
 def _slots(run_dir: Path) -> list[Path]:
-    return sorted(run_dir.glob("step*.pt"),
-                  key=lambda p: int(p.stem.replace("step", "")))
+    """Every checkpoint in the directory, oldest first.
+
+    Ordered by when the file was written, not by the number in its name. The
+    number counts steps, and a step is only the same size within one run: a run
+    resumed with a larger micro-batch renumbers from a smaller figure, so a
+    checkpoint from an earlier run can carry a larger number than anything the
+    current run will ever reach. Sorted by name, that stale file is picked as
+    the newest for ever - it is handed to `eval` and `export`, and a resumed run
+    rewinds to it, throwing away every hour since. Renaming into place is what
+    sets the modification time, so it is exactly the moment the file became
+    readable.
+    """
+    return sorted(run_dir.glob("step*.pt"), key=lambda p: p.stat().st_mtime)
 
 
 def latest(run_dir: Path) -> Path | None:

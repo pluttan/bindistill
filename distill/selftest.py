@@ -340,6 +340,36 @@ def _dolma_subsets():
             raise AssertionError("an unknown subset was accepted")
 
 
+@case("the newest checkpoint is the one written last")
+def _checkpoint_order():
+    """Step numbers are not comparable across runs of the same directory.
+
+    A run resumed with a bigger micro-batch renumbers its steps from a smaller
+    figure, so a file left by an earlier run can hold a larger number than
+    anything the new run reaches. Picked by name, that stale file stays the
+    newest for ever: `eval` measures it, `export` ships it, and a resumed run
+    rewinds to it.
+    """
+    import time as clock
+
+    from . import checkpoint
+
+    with tempfile.TemporaryDirectory() as room:
+        run_dir = Path(room)
+        old = run_dir / "step610351.pt"
+        old.write_bytes(b"older run, larger number")
+        clock.sleep(0.01)
+        fresh = run_dir / "step19000.pt"
+        fresh.write_bytes(b"this run, smaller number")
+
+        assert checkpoint.latest(run_dir) == fresh, checkpoint.latest(run_dir)
+
+        # And the same order decides what gets deleted: keeping one must keep
+        # the file just written, not the one with the biggest name.
+        kept = checkpoint._slots(run_dir)[-1:]
+        assert kept == [fresh], kept
+
+
 @case("resuming counts tokens, at whatever the step size turns out to be")
 def _resume_arithmetic():
     """A step is worth different numbers of tokens on different machines,
