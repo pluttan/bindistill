@@ -104,6 +104,42 @@ def on_disk(folder: Path) -> dict:
 # ===  Speed                 ===
 # ==============================
 
+def materialise(model, device: str):
+    """Replace the trainable one-bit layers with what deployment would hold.
+
+    A `BinaryLinear` carries a float32 master weight and rebuilds the matrix on
+    every forward pass. Neither survives export: what ships is the packed bits
+    and the group scales, and a runtime without a one-bit kernel unpacks them
+    into an ordinary matrix once. Timing the trainable form instead measures
+    the training loop and reports a model twice the size of its teacher, which
+    is true of the object in memory and false of the model.
+    """
+    import torch
+    from torch import nn
+
+    from .binary import BinaryLinear
+
+    for name, module in list(model.named_modules()):
+        for leaf, child in list(module.named_children()):
+            if not isinstance(child, BinaryLinear):
+                continue
+            with torch.no_grad():
+                signs, scales = child.packed()
+                weight = torch.where(signs, 1.0, -1.0).view(
+                    child.out_features, -1, child.group) * scales.unsqueeze(-1)
+                weight = weight.view(child.out_features, child.in_features)
+            plain = nn.Linear(child.in_features, child.out_features,
+                              bias=child.bias is not None)
+            plain.weight = nn.Parameter(weight.to(torch.bfloat16),
+                                        requires_grad=False)
+            if child.bias is not None:
+                plain.bias = nn.Parameter(child.bias.detach().to(torch.bfloat16),
+                                          requires_grad=False)
+            setattr(module, leaf, plain)
+
+    return model.to(device=device, dtype=torch.bfloat16)
+
+
 def generation_speed(model, tokenizer, device: str, tokens: int = 64,
                      runs: int = 3) -> dict:
     """Tokens per second when generating, and the memory it takes.
@@ -198,6 +234,8 @@ def run(config, checkpoint: Path | None = None, speed: bool = True) -> dict:
 
     if speed:
         ui.say()
+        # Timed as it would be deployed, not as it is trained.
+        student = materialise(student, device)
         student_speed = generation_speed(student, tokenizer, device)
         report["student_speed"] = student_speed
         del student
@@ -221,9 +259,13 @@ def run(config, checkpoint: Path | None = None, speed: bool = True) -> dict:
         # Saying this out loud is the point. The storage number is real; a
         # reader who assumes it carries over to speed has been misled, and the
         # measurement above is what stops that.
-        ui.detail("generation runs in bfloat16 for both rows: the weights are "
-                  "one bit in storage, the multiplication is not. Speed here "
-                  "measures this implementation, not the representation.")
+        ui.detail("both rows run in bfloat16: the student's weights are one "
+                  "bit in storage and are unpacked into ordinary matrices to "
+                  "compute, because no one-bit kernel is part of this work. "
+                  "The saving measured above is in storage; speed and memory "
+                  "in use are expected to match the teacher, and a difference "
+                  "here is the cost of unpacking, not a property of the "
+                  "representation.")
 
     room = config.run_dir()
     room.mkdir(parents=True, exist_ok=True)

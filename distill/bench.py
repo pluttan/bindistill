@@ -161,6 +161,35 @@ def build_int4(config, device: str):
     return model, models.load_tokenizer(config)
 
 
+def restore_removed_names() -> list[str]:
+    """Put back helper types that transformers has since dropped.
+
+    A published model carries its own modelling code, written against the
+    library as it was at the time, and that code is imported as-is. Names used
+    only for type annotations get renamed or removed between versions, and the
+    import then fails on a model that would otherwise run unchanged.
+
+    Downgrading the library to suit one comparison row is the wrong trade, so
+    the missing names are supplied instead. Each is an annotation helper with
+    no behaviour, which is why a stand-in works at all; anything with logic in
+    it would not be safe to fake, and is not faked here.
+    """
+    from typing import Optional, TypedDict
+
+    import transformers.utils as utils
+
+    restored = []
+    if not hasattr(utils, "LossKwargs"):
+        class LossKwargs(TypedDict, total=False):
+            """Annotation-only, as it was when the model was published."""
+
+            num_items_in_batch: Optional[int]
+
+        utils.LossKwargs = LossKwargs
+        restored.append("LossKwargs")
+    return restored
+
+
 def build_published(config, device: str):
     """An open low-bit model, measured here only to read its own numbers.
 
@@ -168,11 +197,16 @@ def build_published(config, device: str):
     made: the point is one more row of accuracies on the same questions.
     """
     import torch
+    import transformers
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     name = str(config.get("bench.published", "deepgrove/Bonsai"))
+    restored = restore_removed_names()
+    if restored:
+        ui.detail(f"transformers {transformers.__version__}: supplied "
+                  f"{', '.join(restored)} for the published model's own code")
     model = AutoModelForCausalLM.from_pretrained(
-        name, trust_remote_code=True, torch_dtype=torch.bfloat16)
+        name, trust_remote_code=True, dtype=torch.bfloat16)
     model.to(device)
     tokenizer = AutoTokenizer.from_pretrained(name, trust_remote_code=True)
     return model, tokenizer
