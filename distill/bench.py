@@ -205,8 +205,25 @@ def build_published(config, device: str):
     if restored:
         ui.detail(f"transformers {transformers.__version__}: supplied "
                   f"{', '.join(restored)} for the published model's own code")
-    model = AutoModelForCausalLM.from_pretrained(
-        name, trust_remote_code=True, dtype=torch.bfloat16)
+
+    # The attention implementation is named explicitly because the model's own
+    # code looks it up in a dictionary of the library's own functions, and the
+    # value the library now defaults to is not a key in it. Asking for one the
+    # code was written against is enough; the arithmetic is the same either
+    # way, only the kernel differs.
+    model = None
+    problems = []
+    for how in ("eager", "sdpa"):
+        try:
+            model = AutoModelForCausalLM.from_pretrained(
+                name, trust_remote_code=True, dtype=torch.bfloat16,
+                attn_implementation=how)
+            break
+        except Exception as problem:  # noqa: BLE001 - try the next one
+            problems.append(f"{how}: {problem}")
+    if model is None:
+        raise RuntimeError("; ".join(problems))
+
     model.to(device)
     tokenizer = AutoTokenizer.from_pretrained(name, trust_remote_code=True)
     return model, tokenizer
@@ -321,8 +338,25 @@ def run(config, checkpoint: Path | None = None, hours: float = 18.0,
             # One model failing to build is not a reason to lose the rest: the
             # 4-bit row needs a package that may not be installed, and the
             # published one needs the network.
-            ui.warn(f"{name}: {problem}")
-            row = {"model": name, "scores": {}, "error": str(problem),
+            #
+            # The type and the frame are printed with the message because some
+            # of these say very little on their own: a KeyError prints as the
+            # missing key and nothing else, which names neither the dictionary
+            # nor the file it was read in.
+            import traceback
+
+            trace = traceback.format_exc()
+            frames = traceback.extract_tb(problem.__traceback__)
+            where = ""
+            if frames:
+                last = frames[-1]
+                where = f" at {Path(last.filename).name}:{last.lineno}"
+            ui.warn(f"{name}: {type(problem).__name__}: {problem}{where}")
+            if frames:
+                ui.detail(f"    {frames[-1].line}")
+            row = {"model": name, "scores": {},
+                   "error": f"{type(problem).__name__}: {problem}",
+                   "traceback": trace,
                    "minutes": (time.time() - started) / 60}
         finally:
             if model is not None:
