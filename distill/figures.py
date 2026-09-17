@@ -380,3 +380,118 @@ def run(config=None, out: Path | None = None) -> Path:
 
 if __name__ == "__main__":       # usable without the rest of the package
     run()
+
+
+# ==============================
+# ===  Figures for the paper ===
+# ==============================
+
+def fig_bits_quality(reference: dict, out: Path):
+    """Quality against bit width: where each procedure actually lands.
+
+    The bar chart of ratios says which method is better. This says something
+    the bars cannot: what a given bit width buys, and that the frontier is not
+    a smooth curve - at one bit the field splits into procedures that survive
+    and procedures that collapse by five orders of magnitude.
+    """
+    import matplotlib.pyplot as plt
+
+    teacher = reference["teacher"]["wikitext2"]
+    ours = [
+        ("наивное округление", 1.125, reference["naive"]["wikitext2"] / teacher),
+        ("настоящая работа", 1.125, reference["student"]["wikitext2"] / teacher),
+        ("NF4", 4.0, reference["int4"]["wikitext2"] / teacher),
+    ]
+    theirs = [(label, bits, ratio) for label, bits, ratio, _ in PUBLISHED]
+
+    fig, ax = plt.subplots(figsize=(WIDTH * 2.0, 3.0))
+    ax.scatter([b for _, b, _ in theirs], [r for _, _, r in theirs], s=42,
+               color=MOCHA["overlay"], edgecolor=MOCHA["ink"], linewidth=0.5,
+               zorder=4, label="опубликованные процедуры квантования после обучения")
+    ax.scatter([b for _, b, _ in ours], [r for _, _, r in ours], s=58,
+               color=[MOCHA["red"], MOCHA["green"], MOCHA["blue"]],
+               edgecolor=MOCHA["ink"], linewidth=0.6, zorder=5, marker="D",
+               label="настоящая работа и контроли")
+    ax.scatter([16], [1.0], s=58, color="white", edgecolor=MOCHA["ink"],
+               linewidth=0.8, zorder=5, marker="*")
+    ax.annotate("полная точность", xy=(16, 1.0), xytext=(-6, 8),
+                textcoords="offset points", ha="right", fontsize=7)
+
+    # BiLLM contributes two nearly identical points; labelling both collides.
+    OFFSET = {"BiLLM, 1,09 бита": None, "BiLLM, 1,08 бита": (8, -2),
+              "GPTQ, 2 бита": (8, 4), "PB-LLM, 1,70 бита": (8, -8),
+              "округление, 1 бит": (8, -7), "GPTQ, 1 бит": (8, 2)}
+    for label, bits, ratio in theirs + ours:
+        shift = OFFSET.get(label, (8, -2))
+        if shift is None:
+            continue
+        text = "BiLLM, 1,08-1,09 бита" if label.startswith("BiLLM") else label
+        ax.annotate(text, xy=(bits, ratio), xytext=shift,
+                    textcoords="offset points", fontsize=6.5,
+                    color=MOCHA["ink"])
+    ax.axhline(1.0, color=MOCHA["ink"], linewidth=0.6, linestyle=(0, (4, 2)))
+    ax.set_yscale("log")
+    ax.set_xscale("log")
+    ax.set_xticks([1, 1.125, 1.7, 2, 4, 16])
+    ax.set_xticklabels(["1", "1,125", "1,70", "2", "4", "16"])
+    ax.set_xlabel("бит на вес")
+    ax.set_ylabel("перплексия относительно\nсвоей полноточной модели, раз")
+    ax.set_xlim(0.88, 22)
+    ax.set_ylim(0.7, 10 ** 6.2)
+    comma_axis(ax, "y")
+    ax.grid(color=MOCHA["overlay"], alpha=0.22, linewidth=0.4)
+    ax.set_axisbelow(True)
+    # Away from the top right: legend markers there read as data points.
+    ax.legend(loc="center left", bbox_to_anchor=(0.30, 0.62), fontsize=6.5)
+    finish(fig, out / "bits-quality.png")
+
+
+def fig_memory(out: Path):
+    """Where the model's bytes are, before and after.
+
+    Explains the gap between the two compression numbers: the blocks shrink
+    14.22-fold, the rest does not shrink at all, and after binarisation the
+    unshrinkable part is five sixths of what ships. Totals match table IV.
+    """
+    import matplotlib.pyplot as plt
+
+    # MB, as measured: blocks, and everything that stays in 16 bits.
+    ROWS = [("16 бит\nвезде", 840.0, 296.9),
+            ("1,125 бита\nв блоках", 59.1, 296.8)]
+
+    fig, ax = plt.subplots(figsize=(WIDTH, 2.0))
+    spot = [0, 1]
+    ax.barh(spot, [r[1] for r in ROWS], height=0.55, color=MOCHA["blue"],
+            edgecolor=MOCHA["surface"], linewidth=0.5,
+            label="матрицы блоков (бинаризуются)")
+    ax.barh(spot, [r[2] for r in ROWS], left=[r[1] for r in ROWS], height=0.55,
+            color=MOCHA["peach"], edgecolor=MOCHA["surface"], linewidth=0.5,
+            label="остальное: векторные представления,\nвыходной слой, нормализации")
+
+    for y, (_, blocks, rest) in zip(spot, ROWS):
+        # A slice under ~12% of the axis cannot hold its own label.
+        if blocks > 150:
+            ax.annotate(ru(blocks, 1), xy=(blocks / 2, y), ha="center",
+                        va="center", fontsize=7)
+        else:
+            ax.annotate(ru(blocks, 1), xy=(blocks, y), xytext=(0, 13),
+                        textcoords="offset points", ha="center", fontsize=7,
+                        arrowprops=dict(arrowstyle="-", lw=0.5,
+                                        color=MOCHA["surface"]))
+        ax.annotate(ru(rest, 1), xy=(blocks + rest / 2, y), ha="center",
+                    va="center", fontsize=7)
+        ax.annotate(f"{ru(blocks + rest, 1)} МБ", xy=(blocks + rest, y),
+                    xytext=(5, 0), textcoords="offset points", va="center",
+                    fontsize=7.5)
+
+    ax.set_yticks(spot)
+    ax.set_yticklabels([r[0] for r in ROWS])
+    ax.set_ylim(1.75, -0.75)
+    ax.set_xlabel("объём хранения, МБ")
+    ax.set_xlim(0, 1400)
+    comma_axis(ax, "x")
+    ax.legend(loc="lower right", fontsize=6.5, borderpad=0.2,
+              labelspacing=0.35)
+    ax.grid(axis="x", color=MOCHA["overlay"], alpha=0.22, linewidth=0.4)
+    ax.set_axisbelow(True)
+    finish(fig, out / "memory.png")
