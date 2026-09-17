@@ -178,6 +178,15 @@ bench-install:
 	$(PIP) install --upgrade-strategy only-if-needed \
 	  "lm_eval>=0.4.3" bitsandbytes accelerate
 
+# The figures for the paper, drawn from the files the runs wrote. Needs neither
+# a card nor torch - matplotlib is the only dependency, installed separately by
+# `make figures-install` so the training environment stays as it is.
+figures:
+	$(PY) -m distill.figures
+
+figures-install:
+	$(PIP) install --upgrade-strategy only-if-needed matplotlib
+
 # Perplexity on WikiText-2 and C4 - the two numbers every paper in this field
 # reports, and the only ones that can be read against published results.
 reference:
