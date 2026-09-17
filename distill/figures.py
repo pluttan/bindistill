@@ -152,26 +152,35 @@ def finish(fig, path: Path):
 def fig_deciles(signature: dict, out: Path):
     """Sign inversions by decile of the original weight - the training signature.
 
-    Log scale: the point is that the two ends differ by three orders of
-    magnitude, and on a linear axis the last four deciles are invisible.
+    Log scale: the ends differ by three orders of magnitude, and on a linear
+    axis the last four deciles are invisible.
     """
     import matplotlib.pyplot as plt
 
     share = [v * 100 for v in signature["deciles"]]
-    fig, ax = plt.subplots(figsize=(WIDTH, 2.1))
-    ax.bar(range(1, 11), share, color=MOCHA["mauve"],
-           edgecolor=MOCHA["surface"], linewidth=0.5, width=0.72)
+    mean = signature["flipped_share"] * 100
+    fig, ax = plt.subplots(figsize=(WIDTH, WIDTH / 1.62))
+    bars = ax.bar(range(1, 11), share, color=MOCHA["mauve"], width=0.7,
+                  edgecolor="white", linewidth=0.6, zorder=3)
     ax.set_yscale("log")
+    ax.set_ylim(0.012, max(share) * 4.5)
     ax.set_xticks(range(1, 11))
+    ax.set_xlim(0.4, 10.6)
     ax.set_xlabel("дециль модуля исходного веса")
     ax.set_ylabel("знаков перевёрнуто, %")
-    ax.axhline(signature["flipped_share"] * 100, color=MOCHA["red"],
-               linewidth=0.8, linestyle=(0, (4, 2)))
-    ax.set_ylim(top=max(share) * 3.2)
-    ax.annotate(f"в среднем {ru(signature['flipped_share'] * 100, 1)} %",
-                xy=(10.4, signature["flipped_share"] * 100), ha="right",
-                va="bottom", color=MOCHA["red"], fontsize=7)
-    ax.grid(axis="y", color=MOCHA["overlay"], alpha=0.25, linewidth=0.4)
+    ax.axhline(mean, color=MOCHA["red"], linewidth=0.9, linestyle=(0, (5, 2)),
+               zorder=4)
+    ax.annotate(f"в среднем {ru(mean, 1)} %", xy=(10.5, mean), xytext=(0, 5),
+                textcoords="offset points", ha="right", va="bottom",
+                color=MOCHA["red"], fontsize=7)
+    # Only the ends are labelled: the shape carries the middle.
+    for i in (0, 9):
+        ax.annotate(ru(share[i], 2 if share[i] < 1 else 1),
+                    xy=(i + 1, share[i]), xytext=(0, 3),
+                    textcoords="offset points", ha="center", fontsize=6.5)
+    comma_axis(ax, "y")
+    ax.grid(axis="y", color=MOCHA["overlay"], alpha=0.18, linewidth=0.35,
+            zorder=0)
     ax.set_axisbelow(True)
     finish(fig, out / "deciles.png")
 
@@ -387,62 +396,54 @@ if __name__ == "__main__":       # usable without the rest of the package
 # ==============================
 
 def fig_bits_quality(reference: dict, out: Path):
-    """Quality against bit width: where each procedure actually lands.
+    """Every procedure on one axis: ratio to its own full-precision model.
 
-    The bar chart of ratios says which method is better. This says something
-    the bars cannot: what a given bit width buys, and that the frontier is not
-    a smooth curve - at one bit the field splits into procedures that survive
-    and procedures that collapse by five orders of magnitude.
+    Bars, not points: the range spans six orders of magnitude, and on a
+    scatter the rows collapse against the edges. Sorted worst to best, so the
+    reader walks down the list and arrives at the result.
     """
     import matplotlib.pyplot as plt
 
     teacher = reference["teacher"]["wikitext2"]
-    ours = [
-        ("наивное округление", 1.125, reference["naive"]["wikitext2"] / teacher),
-        ("настоящая работа", 1.125, reference["student"]["wikitext2"] / teacher),
-        ("NF4", 4.0, reference["int4"]["wikitext2"] / teacher),
+    rows = [(f"{label}, по данным [8]" if "GPTQ" in label or "округление" in label
+             else label, ratio, MOCHA["overlay"], False)
+            for label, _, ratio, _ in PUBLISHED]
+    rows += [
+        ("наивное округление, 1,125 бита",
+         reference["naive"]["wikitext2"] / teacher, MOCHA["red"], True),
+        ("настоящая работа, 1,125 бита",
+         reference["student"]["wikitext2"] / teacher, MOCHA["green"], True),
+        ("квантование в четыре бита, NF4",
+         reference["int4"]["wikitext2"] / teacher, MOCHA["blue"], True),
     ]
-    theirs = [(label, bits, ratio) for label, bits, ratio, _ in PUBLISHED]
+    rows.sort(key=lambda r: r[1], reverse=True)
 
-    fig, ax = plt.subplots(figsize=(WIDTH * 2.0, 3.0))
-    ax.scatter([b for _, b, _ in theirs], [r for _, _, r in theirs], s=42,
-               color=MOCHA["overlay"], edgecolor=MOCHA["ink"], linewidth=0.5,
-               zorder=4, label="опубликованные процедуры квантования после обучения")
-    ax.scatter([b for _, b, _ in ours], [r for _, _, r in ours], s=58,
-               color=[MOCHA["red"], MOCHA["green"], MOCHA["blue"]],
-               edgecolor=MOCHA["ink"], linewidth=0.6, zorder=5, marker="D",
-               label="настоящая работа и контроли")
-    ax.scatter([16], [1.0], s=58, color="white", edgecolor=MOCHA["ink"],
-               linewidth=0.8, zorder=5, marker="*")
-    ax.annotate("полная точность", xy=(16, 1.0), xytext=(-6, 8),
-                textcoords="offset points", ha="right", fontsize=7)
-
-    # BiLLM contributes two nearly identical points; labelling both collides.
-    OFFSET = {"BiLLM, 1,09 бита": None, "BiLLM, 1,08 бита": (8, -2),
-              "GPTQ, 2 бита": (8, 4), "PB-LLM, 1,70 бита": (8, -8),
-              "округление, 1 бит": (8, -7), "GPTQ, 1 бит": (8, 2)}
-    for label, bits, ratio in theirs + ours:
-        shift = OFFSET.get(label, (8, -2))
-        if shift is None:
-            continue
-        text = "BiLLM, 1,08-1,09 бита" if label.startswith("BiLLM") else label
-        ax.annotate(text, xy=(bits, ratio), xytext=shift,
-                    textcoords="offset points", fontsize=6.5,
-                    color=MOCHA["ink"])
-    ax.axhline(1.0, color=MOCHA["ink"], linewidth=0.6, linestyle=(0, (4, 2)))
-    ax.set_yscale("log")
+    fig, ax = plt.subplots(figsize=(WIDTH * 1.62, WIDTH * 1.62 / 2.25))
+    spot = list(range(len(rows)))
+    ax.barh(spot, [r[1] for r in rows], height=0.66,
+            color=[r[2] for r in rows], edgecolor="white", linewidth=0.7,
+            zorder=3)
+    for y, (_, ratio, colour, mine) in zip(spot, rows):
+        ax.annotate(ru(ratio, 2 if ratio < 100 else 0), xy=(ratio, y),
+                    xytext=(4, 0), textcoords="offset points", va="center",
+                    fontsize=6.8, color=MOCHA["ink"],
+                    fontweight="bold" if mine else "normal")
+    ax.set_yticks(spot)
+    ax.set_yticklabels([r[0] for r in rows], fontsize=6.8)
+    for tick, row in zip(ax.get_yticklabels(), rows):
+        if row[3]:
+            tick.set_fontweight("bold")
+    ax.invert_yaxis()
     ax.set_xscale("log")
-    ax.set_xticks([1, 1.125, 1.7, 2, 4, 16])
-    ax.set_xticklabels(["1", "1,125", "1,70", "2", "4", "16"])
-    ax.set_xlabel("бит на вес")
-    ax.set_ylabel("перплексия относительно\nсвоей полноточной модели, раз")
-    ax.set_xlim(0.88, 22)
-    ax.set_ylim(0.7, 10 ** 6.2)
-    comma_axis(ax, "y")
-    ax.grid(color=MOCHA["overlay"], alpha=0.22, linewidth=0.4)
+    ax.set_xlim(0.85, max(r[1] for r in rows) * 5.5)
+    ax.axvline(1.0, color=MOCHA["ink"], linewidth=0.7, zorder=4)
+    ax.set_xlabel("перплексия относительно своей полноточной модели, раз "
+                  "(логарифмическая шкала)")
+    ax.set_xticks([1, 10, 100, 1000, 10 ** 4, 10 ** 5])
+    comma_axis(ax, "x")
+    ax.grid(axis="x", color=MOCHA["overlay"], alpha=0.16, linewidth=0.35)
     ax.set_axisbelow(True)
-    # Away from the top right: legend markers there read as data points.
-    ax.legend(loc="center left", bbox_to_anchor=(0.30, 0.62), fontsize=6.5)
+    ax.tick_params(axis="y", length=0)
     finish(fig, out / "bits-quality.png")
 
 
@@ -450,48 +451,45 @@ def fig_memory(out: Path):
     """Where the model's bytes are, before and after.
 
     Explains the gap between the two compression numbers: the blocks shrink
-    14.22-fold, the rest does not shrink at all, and after binarisation the
+    14.22-fold, the rest does not shrink at all, and afterwards the
     unshrinkable part is five sixths of what ships. Totals match table IV.
+    The two colours are named in the caption rather than on the canvas, where
+    the longer name has nowhere to sit without covering a bar.
     """
     import matplotlib.pyplot as plt
 
-    # MB, as measured: blocks, and everything that stays in 16 bits.
-    ROWS = [("16 бит\nвезде", 840.0, 296.9),
+    ROWS = [("16 бит везде", 840.0, 296.9),
             ("1,125 бита\nв блоках", 59.1, 296.8)]
 
-    fig, ax = plt.subplots(figsize=(WIDTH, 2.0))
-    spot = [0, 1]
-    ax.barh(spot, [r[1] for r in ROWS], height=0.55, color=MOCHA["blue"],
-            edgecolor=MOCHA["surface"], linewidth=0.5,
-            label="матрицы блоков (бинаризуются)")
-    ax.barh(spot, [r[2] for r in ROWS], left=[r[1] for r in ROWS], height=0.55,
-            color=MOCHA["peach"], edgecolor=MOCHA["surface"], linewidth=0.5,
-            label="остальное: векторные представления,\nвыходной слой, нормализации")
+    fig, ax = plt.subplots(figsize=(WIDTH, WIDTH / 2.05))
+    spot = [0, 0.66]
+    ax.barh(spot, [r[1] for r in ROWS], height=0.38, color=MOCHA["blue"],
+            edgecolor="white", linewidth=0.7, zorder=3)
+    ax.barh(spot, [r[2] for r in ROWS], left=[r[1] for r in ROWS], height=0.38,
+            color=MOCHA["peach"], edgecolor="white", linewidth=0.7, zorder=3)
 
     for y, (_, blocks, rest) in zip(spot, ROWS):
-        # A slice under ~12% of the axis cannot hold its own label.
         if blocks > 150:
             ax.annotate(ru(blocks, 1), xy=(blocks / 2, y), ha="center",
-                        va="center", fontsize=7)
+                        va="center", fontsize=7, zorder=5)
         else:
-            ax.annotate(ru(blocks, 1), xy=(blocks, y), xytext=(0, 13),
+            # too thin to hold a label: sits just above its own segment
+            ax.annotate(ru(blocks, 1), xy=(blocks / 2, y), xytext=(0, 14),
                         textcoords="offset points", ha="center", fontsize=7,
-                        arrowprops=dict(arrowstyle="-", lw=0.5,
-                                        color=MOCHA["surface"]))
+                        color=MOCHA["ink"], zorder=5)
         ax.annotate(ru(rest, 1), xy=(blocks + rest / 2, y), ha="center",
-                    va="center", fontsize=7)
+                    va="center", fontsize=7, zorder=5)
         ax.annotate(f"{ru(blocks + rest, 1)} МБ", xy=(blocks + rest, y),
-                    xytext=(5, 0), textcoords="offset points", va="center",
+                    xytext=(6, 0), textcoords="offset points", va="center",
                     fontsize=7.5)
 
     ax.set_yticks(spot)
     ax.set_yticklabels([r[0] for r in ROWS])
-    ax.set_ylim(1.75, -0.75)
+    ax.set_ylim(1.04, -0.34)
     ax.set_xlabel("объём хранения, МБ")
-    ax.set_xlim(0, 1400)
+    ax.set_xlim(0, 1290)
     comma_axis(ax, "x")
-    ax.legend(loc="lower right", fontsize=6.5, borderpad=0.2,
-              labelspacing=0.35)
-    ax.grid(axis="x", color=MOCHA["overlay"], alpha=0.22, linewidth=0.4)
+    ax.grid(axis="x", color=MOCHA["overlay"], alpha=0.16, linewidth=0.35)
     ax.set_axisbelow(True)
+    ax.tick_params(axis="y", length=0)
     finish(fig, out / "memory.png")
