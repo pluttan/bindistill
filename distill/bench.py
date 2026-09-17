@@ -354,7 +354,16 @@ BUILDERS = {
 }
 
 # The order is by what the paper loses most if the night runs short.
-ORDER = ("teacher", "student", "int4", "published", "naive")
+ORDER = ("teacher", "student", "int4", "naive")
+
+# Measured only when asked for by name. A published model carries its own
+# modelling code, written against the library as it stood at the time, and
+# running it here means patching around every name the library has since moved.
+# Three such patches went in before the model loaded, and it then answered at
+# chance - far below what its authors report - so something else is broken too.
+# A row measured that way says nothing true about somebody else's work, and the
+# figures they published are the honest thing to cite instead.
+ON_REQUEST = ("published",)
 
 
 # ==============================
@@ -406,7 +415,10 @@ def run(config, checkpoint: Path | None = None, hours: float = 18.0,
     room = config.run_dir() / "bench"
     room.mkdir(parents=True, exist_ok=True)
 
-    wanted = [name for name in ORDER if not only or name in only]
+    # Named explicitly: measure exactly those. Named nothing: the default set,
+    # which leaves out the rows that only make sense when asked for.
+    known = ORDER + ON_REQUEST
+    wanted = [name for name in known if name in only] if only else list(ORDER)
     if checkpoint is None and "student" in wanted:
         ui.warn("no checkpoint given, the student row is skipped")
         wanted.remove("student")
