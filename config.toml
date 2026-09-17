@@ -113,10 +113,17 @@ dataloader_workers = 2
 # these are the only numbers that can be read against a published result from a
 # model with a different vocabulary.
 [bench]
-tasks = ["arc_challenge", "arc_easy", "hellaswag", "openbookqa", "piqa", "winogrande"]
-wide_tasks = ["mmlu"]   # fourteen thousand questions; costs more than the six above
+# The set BitNet b1.58 reports, so a row here can be read against a published
+# one. Note BoolQ rather than MMLU: that line adds MMLU only in its later work.
+tasks = ["arc_easy", "arc_challenge", "hellaswag", "winogrande", "piqa", "openbookqa", "boolq"]
+wide_tasks = ["mmlu"]   # fourteen thousand questions; costs more than the seven above
 published = "deepgrove/Bonsai"
 batch_size = "auto"     # the harness sizes it to the card
+
+# Validation perplexity on the two corpora published work reports, measured the
+# way it reports them: whole split encoded once, cut into windows of 2048.
+[reference]
+corpora = ["wikitext2", "c4"]
 
 
 [eval]

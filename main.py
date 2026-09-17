@@ -58,6 +58,15 @@ def build_parser() -> argparse.ArgumentParser:
     profile.add_argument("--checkpoint", default=None)
     add_common(profile, subcommand=True)
 
+    reference = sub.add_parser(
+        "reference", help="perplexity on WikiText-2 and C4, as published work reports it")
+    reference.add_argument("--checkpoint", default=None)
+    reference.add_argument("--window", type=int, default=2048)
+    reference.add_argument("--limit", type=int, default=None,
+                           help="windows per corpus; a few is a dry run")
+    reference.add_argument("--only", default=None)
+    add_common(reference, subcommand=True)
+
     footprint = sub.add_parser(
         "footprint", help="what the compression is worth, end to end")
     footprint.add_argument("--checkpoint", default=None)
@@ -210,6 +219,15 @@ def command_profile(config, given: str | None) -> int:
     return 0
 
 
+def command_reference(config, args) -> int:
+    from distill import reference
+
+    only = [p.strip() for p in args.only.split(",")] if args.only else None
+    reference.run(config, resolve_checkpoint(config, args.checkpoint),
+                  window=args.window, limit=args.limit, only=only)
+    return 0
+
+
 def command_footprint(config, args) -> int:
     from distill import footprint
 
@@ -313,6 +331,8 @@ def main(argv: list[str] | None = None) -> int:
         return command_eval(config, args.checkpoint)
     if args.command == "profile":
         return command_profile(config, args.checkpoint)
+    if args.command == "reference":
+        return command_reference(config, args)
     if args.command == "footprint":
         return command_footprint(config, args)
     if args.command == "bench":

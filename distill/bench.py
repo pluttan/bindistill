@@ -31,11 +31,16 @@ from pathlib import Path
 
 from . import ui
 
-# The set published alongside small open models, so the rows can be read
-# against numbers their authors already report. MMLU is kept apart: it is
-# fourteen thousand questions and costs more than the other six together.
-CORE_TASKS = ("arc_challenge", "arc_easy", "hellaswag", "openbookqa", "piqa",
-              "winogrande")
+# The set reported in the work this field is measured against: BitNet b1.58
+# lists ARC-Easy, ARC-Challenge, HellaSwag, WinoGrande, PIQA, OpenbookQA and
+# BoolQ, and no MMLU. Matching it is what makes a row comparable to a published
+# one; a different set would have to be argued for.
+CORE_TASKS = ("arc_easy", "arc_challenge", "hellaswag", "winogrande", "piqa",
+              "openbookqa", "boolq")
+
+# Knowledge and instruction following, reported by the later and much larger
+# models of that line. Kept apart because MMLU alone is fourteen thousand
+# questions and costs more than the seven above together.
 WIDE_TASKS = ("mmlu",)
 
 # Which of the harness's metrics to believe for each task. Normalised accuracy

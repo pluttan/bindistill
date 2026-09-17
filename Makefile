@@ -88,7 +88,7 @@ FLAGS  := --preset $(CHOSEN) \
 TORCH_INDEX := $(if $(strip $(CUDA)),\
                  --index-url https://download.pytorch.org/whl/$(strip $(CUDA)))
 
-.PHONY: all update detect ensure install torch selftest status fetch train resume eval footprint bench-install bench bench-check night profile export smoke train-multi offline clean
+.PHONY: all update detect ensure install torch selftest status fetch train resume eval reference footprint bench-install bench bench-check night profile export smoke train-multi offline clean
 
 # The whole thing: pick up the latest code, look at the hardware, install what
 # matches it, check the machinery, fetch a mixture of domains, and train. Safe
@@ -178,6 +178,11 @@ bench-install:
 	$(PIP) install --upgrade-strategy only-if-needed \
 	  "lm_eval>=0.4.3" bitsandbytes accelerate
 
+# Perplexity on WikiText-2 and C4 - the two numbers every paper in this field
+# reports, and the only ones that can be read against published results.
+reference:
+	$(PY) main.py reference $(FLAGS) $(if $(CKPT),--checkpoint $(CKPT))
+
 # What the one bit is worth once the embeddings and the head are counted too.
 footprint:
 	$(PY) main.py footprint $(FLAGS) $(if $(CKPT),--checkpoint $(CKPT))
@@ -202,6 +207,7 @@ night:
 	$(PY) main.py eval --preset tiny $(DATA_ARGS)
 	$(PY) main.py footprint --preset tiny
 	$(PY) main.py footprint $(FLAGS) $(if $(CKPT),--checkpoint $(CKPT))
+	$(PY) main.py reference $(FLAGS) $(if $(CKPT),--checkpoint $(CKPT))
 	$(PY) main.py bench --preset tiny $(DATA_ARGS) --hours $(TINY_HOURS) \
 	  --core-only --only teacher,student,int4,naive
 	$(PY) main.py bench $(FLAGS) $(DATA_ARGS) --hours $(MAIN_HOURS) \

@@ -429,6 +429,28 @@ def _footprint_arithmetic():
     assert priced["whole_model_ratio"] < priced["blocks_only_ratio"] / 4
 
 
+@case("reference perplexity is measured the way published work measures it")
+def _reference_windows():
+    """Window length changes the number, so it is part of the measurement.
+
+    A longer window lets the model condition on more text and lowers the
+    perplexity, which is why published results state it. Windows must not
+    overlap and the split is encoded once, not per window: re-tokenising each
+    piece would cut words differently at every boundary.
+    """
+    from . import reference
+
+    assert "wikitext2" in reference.CORPORA
+    assert "c4" in reference.CORPORA
+    # The C4 shard named in that work, not the whole validation split.
+    assert reference.CORPORA["c4"]["files"]["validation"].endswith(
+        "c4-validation.00000-of-00008.json.gz")
+    # WikiText joins its lines with a blank line between them; C4 documents
+    # are joined by a space. Both follow the published preparation.
+    assert reference.CORPORA["wikitext2"]["joiner"] == "\n\n"
+    assert reference.CORPORA["c4"]["joiner"] == " "
+
+
 @case("benchmark scores are read out of whatever the harness returns")
 def _bench_parsing():
     """The harness names its metrics by the filter that produced them.
