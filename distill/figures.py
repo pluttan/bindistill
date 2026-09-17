@@ -398,50 +398,54 @@ if __name__ == "__main__":       # usable without the rest of the package
 def fig_bits_quality(reference: dict, out: Path):
     """Every procedure on one axis: ratio to its own full-precision model.
 
-    Bars, not points: the range spans six orders of magnitude, and on a
-    scatter the rows collapse against the edges. Sorted worst to best, so the
-    reader walks down the list and arrives at the result.
+    Sized for a single column, so the row labels are short and the source of
+    the published numbers is named in the caption rather than on each row.
     """
     import matplotlib.pyplot as plt
 
     teacher = reference["teacher"]["wikitext2"]
-    rows = [(f"{label}, по данным [8]" if "GPTQ" in label or "округление" in label
-             else label, ratio, MOCHA["overlay"], False)
+    SHORT = {"округление, 1 бит": "округление, 1 бит",
+             "GPTQ, 1 бит": "GPTQ, 1 бит",
+             "GPTQ, 2 бита": "GPTQ, 2 бита",
+             "PB-LLM, 1,70 бита": "PB-LLM, 1,70",
+             "BiLLM, 1,09 бита": "BiLLM, 1,09",
+             "BiLLM, 1,08 бита": "BiLLM, 1,08"}
+    rows = [(SHORT[label], ratio, MOCHA["overlay"], False)
             for label, _, ratio, _ in PUBLISHED]
     rows += [
-        ("наивное округление, 1,125 бита",
-         reference["naive"]["wikitext2"] / teacher, MOCHA["red"], True),
-        ("настоящая работа, 1,125 бита",
-         reference["student"]["wikitext2"] / teacher, MOCHA["green"], True),
-        ("квантование в четыре бита, NF4",
-         reference["int4"]["wikitext2"] / teacher, MOCHA["blue"], True),
+        ("наивное округление", reference["naive"]["wikitext2"] / teacher,
+         MOCHA["red"], True),
+        ("настоящая работа", reference["student"]["wikitext2"] / teacher,
+         MOCHA["green"], True),
+        ("NF4, 4 бита", reference["int4"]["wikitext2"] / teacher,
+         MOCHA["blue"], True),
     ]
     rows.sort(key=lambda r: r[1], reverse=True)
 
-    fig, ax = plt.subplots(figsize=(WIDTH * 1.62, WIDTH * 1.62 / 2.25))
+    fig, ax = plt.subplots(figsize=(WIDTH, WIDTH / 1.32))
     spot = list(range(len(rows)))
-    ax.barh(spot, [r[1] for r in rows], height=0.66,
-            color=[r[2] for r in rows], edgecolor="white", linewidth=0.7,
+    ax.barh(spot, [r[1] for r in rows], height=0.68,
+            color=[r[2] for r in rows], edgecolor="white", linewidth=0.6,
             zorder=3)
-    for y, (_, ratio, colour, mine) in zip(spot, rows):
+    for y, (_, ratio, _, mine) in zip(spot, rows):
         ax.annotate(ru(ratio, 2 if ratio < 100 else 0), xy=(ratio, y),
-                    xytext=(4, 0), textcoords="offset points", va="center",
-                    fontsize=6.8, color=MOCHA["ink"],
+                    xytext=(3, 0), textcoords="offset points", va="center",
+                    fontsize=6, color=MOCHA["ink"],
                     fontweight="bold" if mine else "normal")
     ax.set_yticks(spot)
-    ax.set_yticklabels([r[0] for r in rows], fontsize=6.8)
+    ax.set_yticklabels([r[0] for r in rows], fontsize=6.2)
     for tick, row in zip(ax.get_yticklabels(), rows):
         if row[3]:
             tick.set_fontweight("bold")
     ax.invert_yaxis()
     ax.set_xscale("log")
-    ax.set_xlim(0.85, max(r[1] for r in rows) * 5.5)
-    ax.axvline(1.0, color=MOCHA["ink"], linewidth=0.7, zorder=4)
-    ax.set_xlabel("перплексия относительно своей полноточной модели, раз "
-                  "(логарифмическая шкала)")
-    ax.set_xticks([1, 10, 100, 1000, 10 ** 4, 10 ** 5])
+    ax.set_xlim(0.85, max(r[1] for r in rows) * 9)
+    ax.axvline(1.0, color=MOCHA["ink"], linewidth=0.6, zorder=4)
+    ax.set_xlabel("перплексия относительно своей\nполноточной модели, раз", fontsize=7)
+    ax.set_xticks([1, 100, 10 ** 4])
+    ax.tick_params(axis="x", labelsize=6.2)
     comma_axis(ax, "x")
-    ax.grid(axis="x", color=MOCHA["overlay"], alpha=0.16, linewidth=0.35)
+    ax.grid(axis="x", color=MOCHA["overlay"], alpha=0.16, linewidth=0.3)
     ax.set_axisbelow(True)
     ax.tick_params(axis="y", length=0)
     finish(fig, out / "bits-quality.png")
