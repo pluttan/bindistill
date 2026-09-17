@@ -227,6 +227,24 @@ def restore_default_rope() -> list[str]:
     return ["ROPE_INIT_FUNCTIONS['default']"]
 
 
+def report_rope(config) -> None:
+    """Say out loud what the restored entry will use.
+
+    A wrong base here does not raise: the model loads, generates, and answers
+    at chance, which looks like a weak model rather than a broken one. The
+    value published for the model is the only way to tell, so it gets printed
+    next to the measurement.
+    """
+    base, turn = rope_settings(config)
+    ui.field("rope base in use", f"{base:g}")
+    if turn != 1.0:
+        ui.field("partial rotary factor", turn)
+    if base <= 10000.0:
+        ui.warn("this is the library default, not a value read from the "
+                "model: if the model was published with another base, its "
+                "row is measuring a broken model and must not be reported")
+
+
 def rope_settings(config) -> tuple[float, float]:
     """The base and the rotary factor, wherever this version keeps them.
 
@@ -321,6 +339,7 @@ def build_published(config, device: str):
         ui.detail(f"attention set to eager on {settled} modules that still "
                   f"held the library's placeholder")
 
+    report_rope(model.config)
     model.to(device)
     tokenizer = AutoTokenizer.from_pretrained(name, trust_remote_code=True)
     return model, tokenizer
