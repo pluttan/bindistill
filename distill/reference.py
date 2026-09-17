@@ -27,7 +27,10 @@ from . import ui
 # papers; the whole validation split is far larger than anyone measures on.
 CORPORA = {
     "wikitext2": {
-        "path": "wikitext",
+        # The bare name was the canonical one for years and is what every
+        # paper writes; the dataset has since moved under its owner, and only
+        # the new path resolves. Both are tried so the code works either way.
+        "path": ("Salesforce/wikitext", "wikitext"),
         "name": "wikitext-2-raw-v1",
         "split": "test",
         "field": "text",
@@ -49,15 +52,26 @@ def load_text(which: str) -> str:
     from datasets import load_dataset
 
     spec = CORPORA[which]
-    if "files" in spec:
-        data = load_dataset(spec["path"], data_files=spec["files"],
-                            split=spec["split"])
-        # The validation shard holds far more than is ever measured on; the
-        # papers take a few hundred documents and stop.
-        data = data.select(range(min(len(data), spec["documents"])))
-    else:
-        data = load_dataset(spec["path"], spec["name"], split=spec["split"])
-    return spec["joiner"].join(data[spec["field"]])
+    paths = spec["path"]
+    paths = (paths,) if isinstance(paths, str) else tuple(paths)
+
+    failures = []
+    for path in paths:
+        try:
+            if "files" in spec:
+                data = load_dataset(path, data_files=spec["files"],
+                                    split=spec["split"])
+                # The validation shard holds far more than is ever measured
+                # on; the papers take a few hundred documents and stop.
+                data = data.select(range(min(len(data), spec["documents"])))
+            else:
+                data = load_dataset(path, spec["name"], split=spec["split"])
+            if path != paths[0]:
+                ui.detail(f"{which}: loaded as {path}")
+            return spec["joiner"].join(data[spec["field"]])
+        except Exception as problem:  # noqa: BLE001 - try the next name
+            failures.append(f"{path}: {type(problem).__name__}: {problem}")
+    raise RuntimeError(" | ".join(failures))
 
 
 def perplexity(model, tokenizer, text: str, device: str, window: int = 2048,

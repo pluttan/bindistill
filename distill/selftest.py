@@ -442,6 +442,9 @@ def _reference_windows():
 
     assert "wikitext2" in reference.CORPORA
     assert "c4" in reference.CORPORA
+    # The dataset moved under its owner's namespace; the bare name is what the
+    # papers write and no longer resolves on its own, so both are kept.
+    assert "Salesforce/wikitext" in reference.CORPORA["wikitext2"]["path"]
     # The C4 shard named in that work, not the whole validation split.
     assert reference.CORPORA["c4"]["files"]["validation"].endswith(
         "c4-validation.00000-of-00008.json.gz")
